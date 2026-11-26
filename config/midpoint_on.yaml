@@ -1,0 +1,4 @@
+# Override: midpoint linearization on (DESIGN.md section 11). Off by default; for comparisons only,
+# e.g. sim/replay.sh <session> on. Load after config/vio.yaml and the replay override.
+filter:
+  midpoint_linearization: true

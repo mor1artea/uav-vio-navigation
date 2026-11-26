@@ -33,7 +33,7 @@ sudo apt-get update
 sudo apt-get install -y gz-harmonic libgz-sim8-dev rapidjson-dev \
     python3-gz-transport13 python3-gz-msgs10 python3-opencv python3-numpy python3-yaml \
     libopencv-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-    gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-gl \
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-gl \
     cmake ninja-build g++ libeigen3-dev libyaml-cpp-dev
 
 echo "== ArduPilot Copter-4.6.3"

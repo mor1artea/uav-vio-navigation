@@ -34,11 +34,14 @@ pids+=($!)
 
 mkdir -p "$WORLD/sitl"
 cd "$WORLD/sitl"   # SITL writes its parameter storage and logs here
-defaults="$AP/Tools/autotest/default_params/copter.parm,$AP/Tools/autotest/default_params/gazebo-iris.parm"
+# copter.parm as sim_vehicle.py uses it; our own frame file instead of gazebo-iris.parm (no sonar, no
+# precision landing). --model JSON: ardupilot_gazebo talks to SITL through the JSON interface.
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+defaults="$AP/Tools/autotest/default_params/copter.parm,$REPO/sim/vio-iris.parm"
 "$AP/build/sitl/bin/arducopter" --model JSON --defaults "$defaults" -I0 -w \
     --home -35.363262,149.165237,584,0 > sitl.log 2>&1 &
 pids+=($!)
 
-echo "Gazebo and SITL are running. SITL waits for sim/fly_record.py. Ctrl-C to stop."
+echo "Gazebo and SITL are running. SITL waits for sim/fly_record.py (sitl.log: \"Waiting for connection\"). Ctrl-C to stop."
 wait -n
 echo "one of them stopped, see $WORLD/gazebo.log and $WORLD/sitl/sitl.log"

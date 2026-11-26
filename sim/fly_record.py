@@ -9,8 +9,14 @@ The flight: wait on the ground, take off, two turns on the spot (they line up th
 the route with the autopilot in GUIDED, land. ArduPilot flies on the simulated GPS; the recording has
 no GPS in it.
 
+  --route straight --leg metres north at constant speed, land at the end (the scale test)
   --route line     --leg metres north, and back
   --route square   a square with sides of --leg metres (make the world big enough: --east)
+
+IMU noise in 4.6.3 SITL (read in AP_InertialSensor_SITL.cpp): the accelerometer always gets a uniform
+noise of 0.01 m/s^2 per sample; SIM_ACC1_RND only scales simulated motor vibration (SIM_VIB_*), so it
+is not set here. SIM_GYR1_RND (--gyro-noise) adds uniform gyro noise in deg/s times the throttle,
+only with the motors running.
 
 Example (second terminal, after sim/run_sim.sh):
   sim/fly_record.py ~/datasets/sim/line1 --world ~/sim/world_line --speed 12 --height 40 --wind 4 --gust 1.5
@@ -244,7 +250,7 @@ def main():
     ap = argparse.ArgumentParser(description="Fly SITL + Gazebo and record a session (SITL only).")
     ap.add_argument("out", help="new session folder")
     ap.add_argument("--world", default="~/sim/world_line", help="world folder (for camera.yaml)")
-    ap.add_argument("--route", choices=["line", "square"], default="line")
+    ap.add_argument("--route", choices=["straight", "line", "square"], default="line")
     ap.add_argument("--leg", type=float, default=2500.0, help="leg length, m")
     ap.add_argument("--speed", type=float, default=12.0, help="m/s")
     ap.add_argument("--height", type=float, default=40.0, help="m above the start")
@@ -252,8 +258,8 @@ def main():
     ap.add_argument("--wind-from", type=float, default=270.0, help="direction the wind comes from, deg")
     ap.add_argument("--gust", type=float, default=0.0, help="gust spread per axis, m/s")
     ap.add_argument("--ground-time", type=float, default=10.0, help="still on the ground first, s")
-    ap.add_argument("--gyro-noise", type=float, default=0.5, help="SIM_GYR1_RND, deg/s (a guess)")
-    ap.add_argument("--accel-noise", type=float, default=0.5, help="SIM_ACC1_RND, m/s^2 (a guess)")
+    ap.add_argument("--gyro-noise", type=float, default=0.5,
+                    help="SIM_GYR1_RND: gyro noise with the motors running, deg/s times the throttle (a guess)")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--force", action="store_true", help="overwrite the session folder")
     args = ap.parse_args()
@@ -280,7 +286,7 @@ def main():
 
     # SITL parameters. The filters are the ones of the real FC (docs/ARDUPILOT_SETUP.md).
     for name, value in (("INS_GYRO_FILTER", 80), ("INS_ACCEL_FILTER", 20),
-                        ("SIM_GYR1_RND", args.gyro_noise), ("SIM_ACC1_RND", args.accel_noise),
+                        ("SIM_GYR1_RND", args.gyro_noise),
                         ("WPNAV_SPEED", args.speed * 100), ("ANGLE_MAX", 4500)):
         drone.set_param(name, value)
 
@@ -307,7 +313,8 @@ def main():
         for heading in (90, 270, 0):
             drone.yaw_to(heading)
         leg, down = args.leg, -args.height
-        route = [(leg, 0), (0, 0)] if args.route == "line" else [(leg, 0), (leg, leg), (0, leg), (0, 0)]
+        route = {"straight": [(leg, 0)], "line": [(leg, 0), (0, 0)],
+                 "square": [(leg, 0), (leg, leg), (0, leg), (0, 0)]}[args.route]
         for north, east in route:
             print(f"flying to north {north:.0f} m, east {east:.0f} m")
             drone.go_to(north, east, down, args.speed)

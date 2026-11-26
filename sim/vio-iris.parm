@@ -1,0 +1,5 @@
+# SITL parameters for the simulated drone, loaded after ArduPilot's copter.parm by sim/run_sim.sh.
+# Instead of ArduPilot's gazebo-iris.parm, which adds a simulated sonar rangefinder and IRLOCK
+# precision landing (checked in Copter-4.6.3): our drone has neither.
+FRAME_CLASS 1
+FRAME_TYPE 1

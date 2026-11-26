@@ -54,6 +54,12 @@ reviewer:
    renders overconfident (NEES 3 to 20) and the hover diverge; with drift-aware noise (part a) and the
    right white value the midpoint works (0.95, NEES 3.6) at low noise only. Options A-E in DESIGN.md
    section 11, "Pixel noise study".
+11. Stages A and B of the step 4 prompt (2026-11-26): A, doc fixes of the noise study (accepted). B,
+   `sim/` reviewed against the ardupilot_gazebo f116b03, Gazebo Harmonic and Copter-4.6.3 sources
+   (read on the web, nothing installed or run); fixed: SITL noise parameters, `sim/vio-iris.parm`
+   instead of `gazebo-iris.parm`, route `straight`, `sim/replay.sh <session> off|on`,
+   `config/midpoint_on.yaml`, setup packages; `sim/README.md` rewritten as step by step instructions.
+   Reported, waiting. Next: C (step 4 plan).
 
 Your standing decisions: no constant output scale factor, the covariance becomes dynamic step by
 step (parts b and c on hold); update stride 6 and age cap 72 provisional; td online with the 30 ms
