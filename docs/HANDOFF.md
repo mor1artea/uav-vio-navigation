@@ -46,7 +46,14 @@ reviewer:
    decisions (in the repo); switch still off by default, off identical (56 of 56). Same as the first
    build within the bands on 20 of 22 sets; EuRoC 121 starts worst run 1378 % to 3.7 % (off 14.2 %),
    sharp takeoff worst 80 % to 31 %; the test now uses the prior Jacobians, the update the midpoint
-   ones (DESIGN.md section 11). Recommendation: stays off until a straight-leg test with real tracks.
+   ones (DESIGN.md section 11). Accepted; the switch stays off.
+10. Pixel noise study (2026-11-26, reported, reviewed; corrected in stage A of the next prompt): no code or default changed. Real track noise
+   measured (white-equivalent per filter window 0.24-0.91 px on the renders, at most 0.67 px on EuRoC;
+   drift q 0.004-0.076 px^2/deg). On synthetic straight legs with that drift and 1 px told the speed
+   is 2.24 times too high (midpoint off) or 0.85 (on); telling the measured value instead makes the
+   renders overconfident (NEES 3 to 20) and the hover diverge; with drift-aware noise (part a) and the
+   right white value the midpoint works (0.95, NEES 3.6) at low noise only. Options A-E in DESIGN.md
+   section 11, "Pixel noise study".
 
 Your standing decisions: no constant output scale factor, the covariance becomes dynamic step by
 step (parts b and c on hold); update stride 6 and age cap 72 provisional; td online with the 30 ms
@@ -110,9 +117,9 @@ DESIGN.md section 11 says which results need real data and when the Pi is needed
 
 ## 5. Waiting on you
 
-1. Midpoint linearization with keep-gate (DESIGN.md section 11, "Midpoint linearization"): default
-   stays off (my recommendation) or on; whether one straight leg is rendered (about 1 h per 2 min of
-   flight, needs space on C: first) to test it with real KLT tracks at 1 px.
+1. Decided (2026-11-26): the midpoint switch stays off until there is real data; no more noise or
+   linearization studies; Gazebo / SITL code only (you run it on the Linux machine); next is step 4,
+   in stages A (doc fixes), B (finish sim/), C (step 4 plan), D (step 4).
 2. Dynamic covariance: parts b and c on hold; LOST thresholds, sigma_z not decided.
 3. The path of the parameter backup file, to fill the "?" entries in ARDUPILOT_SETUP.md section 10.
 4. Decisions: firmware upgrade to 4.7.3 or not; MAVLink logging (`LOG_BACKEND_TYPE = 2`, decide before
@@ -478,6 +485,17 @@ Findings to keep in mind:
 - Noise-band runs can write to RAM (`/dev/shm`) and keep only their `.txt` summary (`run_kg2.sh`): the
   WSL disk on C: grows with every write and does not give back deleted space (deleting 1.6 GB of band
   run files on 2026-11-26 did not slow the fall of free space on C:).
+- Since the evening of 2026-11-26 the WSL disk is on D: (about 185 GB free) and C: has about 50 GB;
+  the WSL swap is still on C:. Before long runs check `df -m /mnt/d /mnt/c`, stop below 10 GB on either
+  (`guard_study.sh` in the noise study folder). The notes about C: below are history.
+- Scripts that use SciPy (`noise_fit.py`, `viewfit.py`) need `python3 -s`: the user site has NumPy 2.5,
+  which the system SciPy cannot load; `-s` uses the system NumPy 1.26.
+- Real track noise: `~/datasets/analysis/noise_study_2026-11-26/noise_fit.py <repo> <vio_track
+  features> <session> --stride N [--plane]` (white-equivalent per window, white part and drift q
+  against the ground truth). It needs true camera poses with attitude: works on renders, EuRoC and
+  Gazebo / SITL, not on our recordings with the planned GNSS-only ground truth (GROUND_TRUTH.md).
+  Values measured in Gazebo are those of the simulated camera, not of ours, so they cannot replace
+  our camera's white part and q (option D in DESIGN.md section 11).
 - WSL restarted three times on 2026-11-26. The journal of the last one shows read and write errors
   on the swap device; memory inside WSL was never short. C: (holds the WSL disk and its swap) was
   94 % full (about 9 GB free). Watch `df -m /mnt/c`, stop long runs below about 8 GB free (the

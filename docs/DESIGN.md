@@ -1046,12 +1046,15 @@ leg, baro off, 8 seeds, signed along-track error at 5 km (`run_sweep.sh`, diagno
   0.43, and b = 0.5 over-corrects (speed 0.88 times the true one, -8.8 %).
 - Guess: two parts, one that this update's own noise makes and that changes sign along prior to
   update, one from shape errors the update leaves in the window, which no b removes.
-- What it means for real images: the filter uses 1 px on real tracks, and the real mix of track noise
-  (white plus drift, 0.17-1.0 px white part on the renders) and IMU noise is not known. On a straight
-  leg b = 0.5 may over-correct, so the speed may come out too low instead of too high. The renders
-  (real KLT tracks, 1 px) do not show it, but they turn all the time (scale 1.003 off and on); a
-  straight-leg render was not made (about 1 h of rendering per 2 min of flight). Our recordings or
-  such a render have to show it before the switch is trusted on straight legs.
+- What it means for real images (corrected after the review, see "Pixel noise study" below): "b = 0.5
+  over-corrects at 1 px" was measured with 1 px white noise in the data, which is not the real case.
+  Real tracks have less white noise than the 1 px the filter is told (0.24-0.91 px per window on the
+  renders) plus a drift that is correlated along the track. Synthetic straight leg with the drift
+  measured on the normal render (0.2 px white, q 0.044 px^2/deg) and the filter told 1 px: speed 2.24
+  times the true one with the switch off and 0.85 with it on; with the low-contrast render's values
+  (1.0 px, q 0.076) 2.46 and 0.39. So on drifting tracks the bias is larger than with white noise and
+  the midpoint over-corrects. "The midpoint removes most of the bias" holds for white noise with the
+  right noise value, not for real tracks as configured today.
 
 Unobservable directions. In invariant errors the yaw direction (dtheta along the vertical on the IMU
 and every clone) and the three translations (dp on the IMU, every clone and landmark) do not depend
@@ -1094,10 +1097,14 @@ What it could hide:
 - An outlier that passed at the prior also moved the first pass and so the midpoint: it has a say in
   the model it is then used with.
 - The rejection share in the output (n_rejected) describes the prior test only.
-Side observation from the counter: the mean chi2 of kept tracks is 0.59 of the 95 % limit on the
-synthetic sets (where the noise model is right) but 0.08-0.17 on the renders and EuRoC: the 1 px
-pixel noise used on real tracks is far larger than their white noise (0.17-1.0 px, section 13), so
-the per-track test there only catches gross outliers.
+Side observation from the counter (output saved in
+`~/datasets/analysis/noise_study_2026-11-26/out/would_fail_counter.txt`): the mean chi2 of kept
+tracks is 0.57-0.61 of the 95 % limit on the synthetic sets (where the noise model is right), 0.08-0.09
+on the normal render, 0.36 on the low-contrast render, 0.04 on the hover render and 0.16-0.17 on
+EuRoC. Corrected after the review: 1 px is above the white noise of the tracks but not "far larger"
+everywhere: the white-equivalent noise per window is 0.24-0.37 px on the hover and normal renders,
+0.91 px on the low-contrast render (close to 1 px) and at most 0.67 px on EuRoC ("Pixel noise
+study" below). Where it is well above, the per-track test only catches gross outliers.
 
 Hover render: ATE 0.569 % to 0.609 %, NEES 4.6 to 5.5, both outside the noise band. The difference is a
 few centimetres during the hover itself (median position error at 30 s 0.44 m to 0.50 m, at 68 s
@@ -1114,14 +1121,129 @@ the tracker (5-6 ms). On the Pi 5 (2-3 times slower per core, section 8) that is
 update frame, inside a budget that is already tight. Keep-gate costs the same (single runs: 0.71 ms,
 2.28 ms, 4.35 ms against 0.36, 1.21, 3.18 ms off).
 
-Recommendation about the default (updated with keep-gate): keep it off. Keep-gate removed the EuRoC
-divergence and makes the tails better than the switch off, so the remaining reasons are: b = 0.5 fits
-our generator's noise mix and over-corrects at 1 px, the value we use on real tracks, and no
-straight-leg test with real tracks exists; the straight-leg bias is smaller, not gone, and the filter
-stays overconfident along the track; the hover gets slightly worse; it doubles the visual update
-time. What I would do next, if you agree: render one straight leg at constant speed (about 1 h per
-2 min of flight; needs space on C: first) and check the speed ratio with real KLT tracks at 1 px, and
-decide the default on our recordings. Not done: tuning b (not allowed: one value for every set).
+Recommendation about the default (updated after the review of the pixel noise study; your
+decision: off until there is real data): keep it off. What it gains at 1 px: a much lower ATE on
+every synthetic straight leg and loop, with white noise and with drift (normal-render drift 30.7 % to
+4.8 %), and a lower NEES in most rows. What it costs: with drifting tracks it pushes the speed too low
+instead of too high (0.85, and 0.39 at high noise, where the NEES also gets worse), the hover gets
+slightly worse, and the visual update takes twice as long. The direction of the speed error on real
+tracks is not known, and that decides whether the lower ATE is worth it. Not done: tuning b (not
+allowed: one value for every set).
+
+**Pixel noise study (2026-11-26).** After the keep-gate review: the straight-leg bias depends on the
+gap between the pixel noise the filter is told and the noise in the data. No code or default changed;
+diagnostic runs only. Runs, scripts and outputs: `~/datasets/analysis/noise_study_2026-11-26/`
+(`run_study.sh`, `run_parta.sh`, `noise_fit.py`, `study_table.py`, `out/`). Synthetic data, flat
+ground, 20 seeds, baro on, 5 km at 12 m/s; renders and EuRoC 20 starts.
+
+Real track noise, measured against the ground truth (`noise_fit.py`, tracks from today's tracker; one
+"window" = up to 12 observations every 6th frame on the renders, every 3rd on EuRoC, as the filter
+sees them; the point fitted with the true poses):
+
+| Set | white-equivalent noise per window | chi2 ratio at 1 px, true poses | from the filter's counter | white part | drift q, px^2/deg |
+|---|---|---|---|---|---|
+| normal render | 0.37 px | 0.074 | 0.08-0.09 (0.38 px) | 0.21 px | 0.044 |
+| low-contrast render | 0.91 px | 0.44 | 0.36 (0.79 px) | 0.97 px | 0.076 |
+| hover render | 0.24 px | 0.034 | 0.04 (0.27 px) | 0.49 px | 0.004 |
+| EuRoC MH_01 | 0.67 px (upper bound) | 0.30 | 0.17 (0.54 px) | 0.56 px | 0.019 (lower bound) |
+
+"From the filter's counter": the noise its chi2 ratio implies, sqrt(ratio / 0.59) x 1 px (0.59 is what
+the synthetic sets with the right noise give). It agrees with the ground-truth measurement within
+0.01-0.12 px on the renders. EuRoC: its ground truth has its own pose errors, so 0.67 px is an upper
+bound; its q comes from residuals around a point fitted to the same track, a lower bound. The white
+part of the hover render is inflated by the plane method (the first observation's noise shifts the
+point).
+
+Straight leg at constant speed, switch off and on (keep-gate): speed ratio at 95 % of the flight
+(estimated / true), ATE in % of the path and position NEES, median over 20 seeds (ranges in
+`out/study_tables.txt`):
+
+| Data | Told | speed ratio off / midpoint | ATE off / midpoint | position NEES off / midpoint |
+|---|---|---|---|---|
+| 0.1 px white | 0.1 px | 1.08 / 1.01 | 2.4 % / 0.34 % | 28 / 2.9 |
+| 0.1 px white | 1.0 px | 1.42 / 1.37 | 11.6 % / 10.3 % | 9.8 / 7.3 |
+| 0.5 px white | 0.5 px | 1.51 / 1.05 | 13.1 % / 1.9 % | 55 / 4.4 |
+| 0.5 px white | 1.0 px | 1.58 / 1.21 | 15.2 % / 5.4 % | 19 / 4.3 |
+| 1.0 px white | 1.0 px | 2.00 / 0.84 | 23.2 % / 5.5 % | 54 / 9.4 |
+| 0.2 px white + drift q 0.044 (normal render) | 0.2 px | 3.32 / 0.71, some seeds diverge | 43.0 % / 11.3 % | 353 / 76 |
+| same | 0.37 px | 1.71 / 0.79 | 17.9 % / 6.2 % | 252 / 70 |
+| same | 1.0 px | 2.24 / 0.85 | 30.7 % / 4.8 % | 90 / 10 |
+| 1.0 px white + drift q 0.076 (low-contrast render) | 1.0 px | 2.46 / 0.39 | 35.9 % / 18.4 % | 129 / 233 |
+| 0.2 px white + drift 0.044, with drift-aware noise (part a, q 0.044) | 0.2 px | 1.50 / 0.95 | 14.5 % / 2.2 % | 45 / 3.6 |
+| 1.0 px white + drift 0.076, with drift-aware noise (q 0.076) | 1.0 px | 2.08 / 0.57 | 25.4 % / 13.1 % | 44 / 49 |
+
+Loop at constant speed, told 1 px, ATE off / midpoint (same pattern for the speed ratio): 0.1 px
+white 4.4 % / 3.9 %, 0.5 px 5.7 % / 2.0 %, 1.0 px 8.7 % / 2.8 %, normal-render drift 12.5 % / 2.4 %,
+low-contrast drift 13.6 % / 9.4 %. At 1 px the midpoint lowers the ATE in every straight and loop row,
+also where it pushes the speed too low: the error of a speed that is 0.85 times the true one is smaller
+than that of one 2.24 times too high.
+
+Turning flights with drifting tracks (review of the study, 8 seeds, straight leg 5 km, drift like the
+normal render, told 1 px; numbers checked against the review's saved outputs), ATE / position NEES
+off and midpoint: constant speed 30.8 % / 88 and 6.0 % / 14; speed changes every 40 s 11.3 % / 83 and
+4.9 % / 19; S-turns every 40 s 2.5 % / 18 and 0.94 % / 3.3. So with drifting tracks even S-turns are
+not honest with the switch off.
+
+The synthetic drift sets are noisier than the renders they imitate (`noise_fit.py` on one session of
+each, same window method): white-equivalent per window 0.44 px against 0.37 px (normal-render-like),
+1.12 px against 0.91 px (low-contrast-like); chi2 ratio at 1 px 0.11 against 0.07 and 0.76 against
+0.44. The drift rows above are therefore somewhat pessimistic for those renders.
+
+Renders and EuRoC told the measured value instead of 1 px (ATE, position NEES, median over 20 starts;
+noise bands in `out/study_tables.txt`):
+
+| Set | told 1 px, off / midpoint | told the measured value, off / midpoint |
+|---|---|---|
+| normal render (0.37 px) | 0.172 % / 0.163 %, NEES 3.0 / 2.9 | 0.271 % / 0.267 %, NEES 20 / 19 |
+| low-contrast render (0.91 px) | 0.446 % / 0.359 %, NEES 10.5 / 8.4 | 0.430 % / 0.421 %, NEES 10.4 / 10.7 |
+| hover render (0.24 px) | 0.569 % / 0.609 %, hover 0.22 / 0.26 m/min | 15.9 % / 3.5 %, some starts diverge, hover 15.5 / 3.9 m/min |
+| EuRoC (0.67 px) | 0.718 % / 0.729 %, NEES 66 / 64, attitude 40 / 40 | 0.591 % / 0.619 % (one start 116 %), NEES 47 / 52, attitude 50 / 49 |
+
+What is shown (synthetic and renders):
+- Telling the filter less noise than it has makes the bias larger; telling it more makes the
+  midpoint correct less. With the right white value the midpoint works (0.1 and 0.5 px).
+- Drift along the track makes the straight-leg bias much larger than white noise of the same size
+  (2.24 against 1.58 at 1 px told), and the midpoint then over-corrects (0.85, and 0.39 with more
+  noise). Telling only the white value (0.2 px) on drifting tracks is dangerous: some seeds diverge.
+- On the renders and EuRoC the measured value instead of 1 px makes things worse where the drift
+  matters (normal render NEES 3 to 20, hover diverges in some starts); EuRoC gets a better ATE (0.72 %
+  to 0.59 %) and position NEES (66 to 47) but a worse attitude NEES (40 to 50). So today's 1 px works
+  on real tracks because it also covers the drift, not because it matches the white noise.
+- With the drift modelled (part a with the data's q) and the white value told, drifting tracks with
+  low noise behave like white noise: the midpoint brings the speed to 0.95 with position NEES 3.6.
+  With high noise (low-contrast values) it still over-corrects (0.57).
+Guesses: real flights behave like the drift rows (our camera's white part and q are not known); the
+over-correction at high noise is the same effect as the moving zero crossing of the blend sweep.
+
+Options (for your decision; none applied):
+- A. Keep 1 px and the midpoint off (today): straight-leg speed about 2.2 times too high on
+  normal-render-like drift (synthetic, ATE 31 %); with drifting tracks also turning flights are not
+  honest (S-turns ATE 2.5 %, NEES 18; review, 8 seeds). Honest only on the renders and figure-eights
+  that turn all the time.
+- B. Midpoint on with 1 px. Gains: lower ATE in every straight and loop row at 1 px (normal-render
+  drift 30.7 % to 4.8 %, NEES 90 to 10; S-turns 2.5 % to 0.94 %, NEES 18 to 3.3; low-contrast drift
+  35.9 % to 18.4 %), better long flights and low-contrast render, the EuRoC tail fixed by keep-gate.
+  Costs: the speed comes out too low instead of too high (0.85, and 0.39 with low-contrast drift, where
+  the NEES gets worse, 129 to 233), the hover renders get slightly worse, twice the visual update time,
+  and nothing on real tracks shows which way it goes there.
+- C. Lower the pixel noise to a measured white value without modelling the drift: worse on the
+  renders (normal render NEES 3 to 20, hover diverges in some starts) and on the synthetic drift sets;
+  on EuRoC the ATE (0.72 % to 0.59 %) and position NEES (66 to 47) get better but the attitude NEES
+  worse (40 to 50). Not recommended as a general setting.
+- D. Part a on (drift-aware noise, existing switch) with the white part and q measured per camera,
+  with or without the midpoint: the best synthetic result for normal-render-like tracks (0.95, NEES
+  3.6 with the midpoint), but over-corrects at high noise, and part a made the hover render worse
+  earlier (13.11). Needs our camera's white part and q. `noise_fit.py` needs true camera poses
+  with attitude; the ground truth planned for our recordings is GNSS position only
+  (GROUND_TRUTH.md), which is not enough. Gazebo / SITL has true poses, but the noise and drift
+  measured there are those of the simulated camera and image, not of ours: it cannot supply the
+  values D needs. Only our camera with a ground truth that includes attitude can (a separate
+  attitude reference on the drone; not planned).
+- E. Real tracks on a straight leg first (Gazebo on the Linux machine, or a rendered straight leg,
+  about 1 h per 2 min of flight), then decide between A, B and D.
+Pixel noise value: the data do not support lowering the 1 px while the drift is not modelled. If
+part a is used, the white value should be the measured white part of our camera (0.2 px on the normal
+render, 1.0 px on the low-contrast one: it depends on the image), not one number for all.
 
 Open after the review fixes, the moving origin, part a, the EuRoC liftoff check and stage 4:
 
@@ -1154,6 +1276,10 @@ Open after the review fixes, the moving origin, part a, the EuRoC liftoff check 
    0.74 ms while the error reaches -8 to +9 ms (up to 12 sigma), with or without the scale bias. Probably
    the same kind of false information (gyro noise looks like rotation); not investigated. Freezing
    td does not change the scale bias.
+8. Pixel noise and track drift (2026-11-26, "Pixel noise study" above): the straight-leg bias depends
+   on the told pixel noise and on the drift of real tracks. Decided: the midpoint stays off until there
+   is real data, no more noise or linearization studies; real straight-leg tracks from Gazebo / SITL
+   (stage B) or our recordings.
 
 Stage 1b, the Pi recorder and our own data (RECORDING.md). Then camera calibration and the choice of
 the camera model, then Stage 2 (quality on real data).

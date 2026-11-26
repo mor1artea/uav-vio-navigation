@@ -515,7 +515,9 @@ What is honest and what is not:
   changes without turns (straight 6.4 %, loop 2.5 % with the baro; 4.1 % / 1.6 % without, the baro
   speed term leaks into the scale), the takeoff. With the midpoint switch on: also the constant-speed
   straight leg and loop come near it (1.9 % / 0.84 %), speed changes 3.3 % / 1.4 % with the baro and
-  0.66 % / 0.60 % without. The straight-leg bias is smaller, not gone: speed 1.055 (0.92-1.21) times
+  0.66 % / 0.60 % without (all with white pixel noise and the filter told the right value; with
+  tracks that drift like the rendered ones the midpoint over-corrects, DESIGN.md section 11, "Pixel
+  noise study"). The straight-leg bias is smaller, not gone: speed 1.055 (0.92-1.21) times
   the true one at 95 % of the flight, scale over the last 10 % of the path 1.107 (0.96-1.26).
 
 CPU per frame (laptop, one thread): filter 0.5-1.7 ms per update frame median, at most 6.6 ms;
