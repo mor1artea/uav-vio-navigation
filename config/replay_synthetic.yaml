@@ -1,0 +1,18 @@
+# Overrides for replaying sessions from tools/gen_synthetic.py, loaded after config/vio.yaml.
+# Those sessions start in flight, so the filter starts from the ground truth state. The bias priors
+# match what the generator draws (gyro 0.003 rad/s, accel 0.05 m/s^2 per axis), so the covariance
+# can be checked for consistency.
+camera:
+  line_time_us: 0.0              # global shutter
+imu:
+  td_initial_ms: 0.0
+  td_prior_sigma_ms: 5.0
+filter:
+  pixel_noise_px: 0.5            # the generator adds 0.5 px
+  imu_noise_from_session: true
+  init:
+    mode: ground_truth
+    sigma_bg: 0.003
+    sigma_ba: 0.05
+    sigma_att_deg: 0.1
+    sigma_vel: 0.01

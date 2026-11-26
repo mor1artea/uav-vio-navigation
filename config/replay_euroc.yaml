@@ -1,0 +1,17 @@
+# Overrides for replaying EuRoC sequences, loaded after config/vio.yaml:
+#   vio_replay <sequence> --mode vio --config config/vio.yaml --config config/replay_euroc.yaml
+# EuRoC: hardware-synchronized camera and IMU (td about 0), ADIS16448 IMU with its noise in
+# imu0/sensor.yaml, start standing still on the floor (MH: use --start 22).
+camera:
+  line_time_us: 0.0              # global shutter
+imu:
+  td_initial_ms: 0.0
+  td_prior_sigma_ms: 5.0
+tracker:
+  max_track_age: 36              # 12 update frames at stride 3
+filter:
+  update_stride: 3               # EuRoC: 20 fps, indoors at 3-5 m; features leave the view fast, stride 6 starves
+  imu_noise_from_session: true
+  init:
+    mode: static
+    sigma_ba: 0.2                # the ground truth accel bias of MH_01 reaches 0.14 m/s^2

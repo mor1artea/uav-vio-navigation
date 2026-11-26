@@ -1,0 +1,17 @@
+# Local, per-drone and private settings (real site coordinates etc.)
+config/local.yaml
+
+# Build output and editor index
+build/
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+
+# Recordings, datasets and logs are large and stay off git.
+# Datasets live outside the repo (default ~/datasets); this also covers a symlink named datasets.
+recordings/
+datasets/
+datasets
+*.log

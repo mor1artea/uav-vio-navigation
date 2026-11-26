@@ -1,0 +1,6 @@
+# Overrides for replaying rendered sessions (tools/render_ground.py) with the tracker running on
+# their images. Load after config/vio.yaml and config/replay_synthetic.yaml:
+#   --config config/vio.yaml --config config/replay_synthetic.yaml --config config/replay_render.yaml
+# The synthetic default of 0.5 px fits the generator's feature files, not real KLT tracks.
+filter:
+  pixel_noise_px: 1.0

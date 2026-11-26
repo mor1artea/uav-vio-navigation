@@ -1,0 +1,10 @@
+# Overrides for replaying simulated flights (sim/fly_record.py). Load after config/vio.yaml:
+#   --config config/vio.yaml --config config/replay_sim.yaml
+# These sessions start still on the ground, so the filter starts as on the real drone (static start,
+# yaw from the ground truth, which stands in for the compass). The camera model and mounting come
+# from the session. The IMU noise values are the placeholders of config/vio.yaml.
+camera:
+  line_time_us: 0.0              # global shutter
+imu:
+  td_initial_ms: 0.0             # sim/make_session.py lines up the two clocks; the 30 ms prior of
+                                 # vio.yaml stays, the alignment can be off by some ms

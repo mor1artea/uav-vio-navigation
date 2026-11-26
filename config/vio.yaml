@@ -1,0 +1,186 @@
+# VIO module configuration. One file for camera, extrinsics, IMU, quality and output.
+# Private or per-drone values (site coordinates, device path) go into config/local.yaml, which is
+# loaded on top of this file and is not in git. Template: config/local.example.yaml.
+# Values marked TODO are placeholders. The module refuses to send data to the FC while
+# extrinsics.calibrated is false (it will still record, so you can calibrate from recordings).
+# Units: meters, seconds, radians unless the name says otherwise (_ms, _us, _deg, _px).
+
+camera:
+  sensor_mode: [1640, 1232]      # IMX219 2x2 binned, full field of view
+  sensor_bit_depth: 8            # 8 = special binning, ~12 ms readout. 10 = ~23 ms readout
+  output_size: [640, 480]        # ISP downscale, grayscale (Y plane) is used for tracking
+  fps: 30
+  exposure_max_us: 2000          # short exposure against blur at fast rotations
+  analogue_gain_max: 8.0
+  line_time_us: 24.3             # per OUTPUT row: 9.45 us * 1232 / 480. Verify in calibration
+  model: kannala_brandt          # kannala_brandt (k1..k4) or radtan (k1, k2, p1, p2), chosen after calibration
+  # TODO: fill from calibration (CALIBRATION.md, step 2). Values below are a rough guess.
+  intrinsics: {fx: 340.0, fy: 340.0, cx: 320.0, cy: 240.0}
+  distortion: {k1: 0.0, k2: 0.0, k3: 0.0, k4: 0.0}
+  calibrated: false
+
+extrinsics:
+  # Camera pose in the body frame (FRD, origin at the FC IMU): p_body = R_body_cam * p_cam + t_body_cam
+  # Camera frame: x right, y down, z along the optical axis (OpenCV).
+  # Nominal rotation below = camera looking straight down, top of the image towards the nose.
+  # TODO: replace with the Kalibr result. It includes the small mounting misalignment.
+  R_body_cam:
+    - [0.0, -1.0, 0.0]
+    - [1.0,  0.0, 0.0]
+    - [0.0,  0.0, 1.0]
+  # TODO: measure with a ruler (CALIBRATION.md, step 1). Body FRD: x forward, y right, z down.
+  t_body_cam: [null, null, null]
+  camera_damper: unknown         # TODO: none / soft. Soft mounts break the rigid extrinsic assumption
+  calibrated: false
+
+imu:
+  source: HIGHRES_IMU            # float, no gyro clipping. RAW_IMU only as a fallback
+  rate_hz: 200
+  # TODO: from the Allan variance of a long static recording (CALIBRATION.md, step 4),
+  # then inflated, because the FC already low-pass filters the signal.
+  gyro_noise_density: 0.004      # rad/s/sqrt(Hz)
+  gyro_random_walk: 0.0002       # rad/s^2/sqrt(Hz)
+  accel_noise_density: 0.04      # m/s^2/sqrt(Hz)
+  accel_random_walk: 0.002       # m/s^3/sqrt(Hz)
+  # Filter delays inside the FC (docs/ARDUPILOT_SETUP.md section 2). Only valid for the current
+  # INS_GYRO_FILTER=80, INS_ACCEL_FILTER=20 and harmonic notch settings. Accel samples are shifted by
+  # (accel_delay_ms - gyro_delay_ms) so gyro and accel line up before integration.
+  gyro_delay_ms: 7.0             # 4.8-9.9 depending on motor RPM (notches). TODO: set from the hover RPM in the first log
+  gyro_delay_no_notch_ms: 3.7    # motors stopped (bench, calibration): notches are off
+  accel_delay_ms: 13.0           # 12.8-13.4, no notches on the accel
+  td_initial_ms: 0.0             # camera-IMU time offset against the gyro. TODO: from Kalibr or the gyro cross-correlation (CALIBRATION.md step 3)
+  td_prior_sigma_ms: 30.0        # uncertainty of td_initial_ms. Large: camera, USB and FC time stamping may add tens of ms
+  td_estimate_online: true       # false: td stays at td_initial_ms
+  td_rate_window_ms: 30          # the td Jacobian uses the gyro averaged over this window, centred on the frame time
+  gyro_saturation_rad_s: 34.0    # ICM-42688 at 2000 deg/s
+  accel_saturation_m_s2: 156.0   # 16 g
+
+mavlink:
+  device: /dev/ttyACM0           # set the stable /dev/serial/by-id/ name in config/local.yaml
+  system_id: 1                   # same as the FC
+  component_id: 197              # MAV_COMP_ID_VISUAL_INERTIAL_ODOMETRY
+  reconnect_period_s: 1.0
+
+origin:
+  # EKF origin, sent with SET_GPS_GLOBAL_ORIGIN if the FC has none. Without an origin Copter never
+  # runs its EKF failsafe check. Coordinates rounded to the nearest city are enough.
+  # PLACEHOLDER: the real values go into config/local.yaml (not in git, see local.example.yaml).
+  # With 0, 0 the module does not send an origin and reports an error instead.
+  send_if_missing: true
+  latitude_deg: 0.0
+  longitude_deg: 0.0
+  altitude_m: 0.0                # AMSL
+
+tracker:
+  max_features: 150
+  grid: [8, 6]                   # cells, features are spread over the image
+  min_distance_px: 15
+  klt_window_px: 21
+  klt_pyramid_levels: 3
+  forward_backward_max_px: 1.0
+  gyro_prediction: true
+  max_track_age: 72              # frames; older features are re-detected (resets KLT drift), landmarks are kept.
+                                 # = clones + 1 update frames (12 * update_stride): shorter caps leave no track
+                                 # long enough for a landmark, and the hover drifts away (DATASETS.md section 6)
+  clahe: false                   # off: no better tracks on EuRoC or rendered ground, costs 2 ms. Re-check on our recordings
+
+sky_mask:
+  enabled: true                  # needs the attitude; vio_track --no-sky-mask for forward cameras (EuRoC)
+  max_off_nadir_deg: 75          # rays further from straight down are masked (sky, horizon, far ground)
+  image_check: true              # brightness / texture check near the mask boundary. Not built yet (Stage 2)
+  min_usable_fraction: 0.35      # below this the frame counts as bad
+
+filter:
+  clones: 11                     # state size 17 + 11 * 6 + 25 * 3 = 158
+  update_stride: 6               # visual update on every 6th frame: at 30 fps 5 Hz, the 11 clones span 2.2 s.
+                                 # Slow flight and the approach to a hover need that baseline (DATASETS.md s. 6)
+  max_landmarks: 25              # long-lived points for hover
+  landmark_max_view_change_deg: 5.0  # drift guard: KLT drifts when the view of a point changes; a
+                                 # landmark is dropped once its viewing direction turned this much
+  landmark_max_age_s: 60.0       # and after this at the latest
+  landmark_speed_max: 4.0        # m/s: landmarks are only made when flying this slowly (into hover)
+  landmark_min_parallax_deg: 3.0 # a landmark keeps its depth in the state: it needs a well known depth
+  chi2_probability: 0.95
+  pixel_noise_px: 1.0            # feature pixel noise, 1 sigma
+  min_observations: 4            # a track needs this many frames for an update
+  min_parallax_deg: 1.0          # and this much angle between its rays
+  track_drift:                   # drift-aware feature noise (DESIGN.md 13.4 a, msckf.h)
+    enabled: false               # off: every pixel has white noise pixel_noise_px, as before
+    q_px2_per_deg: 0.05          # track drift: random walk variance per deg of view change, per image axis.
+                                 # Placeholder from the true pixel error of the normal render (DESIGN.md
+                                 # 13.4); our camera's value comes from our recordings (13.7)
+    sigma_max_px: 4.0            # later observations of a track whose modelled sigma exceeds this are not used
+  midpoint_linearization: false  # visual update: Jacobians halfway between prior and update (msckf.h,
+                                 # DESIGN.md section 11). Off: today's EKF linearization at the prior
+  origin_shift_distance_m: 100.0 # positions inside the filter are kept relative to an origin that moves to
+                                 # the drone beyond this distance (filter.h); <= 0: the origin stays at the start
+  imu_noise_from_session: false  # datasets: take the IMU noise from imu0/sensor.yaml instead of imu: above
+  init:
+    mode: static                 # static: start on the ground, still. ground_truth: replays that start in flight
+    static_window_s: 1.0         # still for this long before the start
+    sigma_yaw_deg: 3.0           # compass yaw at the start
+    sigma_ba: 0.1                # accel bias prior, m/s^2
+    sigma_bg: 0.01               # gyro bias prior when it is not measured (ground_truth start), rad/s
+    sigma_att_deg: 0.5           # attitude prior for a ground_truth start
+    sigma_pos: 0.01              # m, the origin is the start point
+    sigma_vel: 0.05              # m/s, ground_truth start
+  zupt:
+    enabled: true                # zero-velocity updates while still on the ground
+    accel_std_max: 0.1           # still: accel spread per axis over static_window_s, m/s^2
+    gyro_std_max: 0.01           # and gyro spread, rad/s
+    image_motion_max_px: 1.0     # and the features moved less than this since the last frame (median).
+                                 # The IMU alone cannot tell rest from flight at constant velocity
+    velocity_noise: 0.01         # m/s
+    landed:                      # also while the FC says landed with the motors running (vibration):
+      enabled: false             # v = 0 when the landed flag is fresh, the image does not move and the
+                                 # mean accel has the magnitude of gravity (DESIGN.md section 11, takeoff).
+                                 # Off until our own takeoff recordings (your decision, 2026-11-26)
+      max_flag_age_s: 0.1        # use a landed message only this long after the FC sent it
+      accel_max: 0.3             # m/s^2: | |mean specific force| - g |; on the ground at most 0.11 in EuRoC
+  baro:
+    enabled: true
+    noise_m: 1.0                 # weak on purpose, not used for scale
+    bias_random_walk_m_s: 0.05   # m per sqrt(s)
+    inflate_below_agl_m: 3.0     # ground effect and prop wash, above the takeoff height
+    inflate_above_climb_m_s: 2.0
+    inflate_factor: 3.0          # noise times this near the ground or in fast climbs (a guess)
+  mag_heading:
+    enabled: false               # turn on after checking compass quality in flight logs
+    noise_deg: 8.0
+
+quality:
+  # Score 0-100 and state GOOD / DEGRADED / LOST
+  good_min_score: 50
+  lost_after_bad_s: 2.0          # no good frames for this long -> LOST
+  min_tracks: 30
+  min_tracked_ratio: 0.5         # forward-backward check pass rate
+  min_grid_cells: 12             # cells with at least one feature
+  min_inlier_ratio: 0.6
+  max_reprojection_px: 2.0
+  blur_laplacian_var_min: 30.0
+  brightness_range: [20, 235]
+  imu_rate_min_hz: 150
+  imu_gap_max_ms: 20
+  td_change_max_ms: 10
+  frame_interval_jitter_max_ms: 8
+  max_speed_m_s: 25.0            # anything faster is treated as a filter error
+  fc_divergence_max_m: 5.0       # our position vs FC LOCAL_POSITION_NED
+
+output:
+  rate_hz: 30
+  velocity_nan_sigma_factor: 3.0 # send NaN velocity when sigma_v > factor * VISO_VEL_M_NSE
+  viso_vel_m_nse: 0.3            # must match the FC parameter
+  degraded_inflation_per_s: 0.5  # covariance grows as exp(rate * time in DEGRADED)
+  short_gap_s: 5.0               # recovery: below this, propagate through the gap
+  max_speed_for_gap_bound_m_s: 15.0
+  covariance_mode: honest        # see ARDUPILOT_SETUP.md section 3
+
+recording:
+  enabled: true
+  directory: /var/lib/vio/recordings
+  save_frames: true
+  max_disk_use_gb: 40
+
+logging:
+  directory: /var/log/vio
+  level: info

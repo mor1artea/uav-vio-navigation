@@ -1,0 +1,14 @@
+# Template for config/local.yaml. Copy it:  cp config/local.example.yaml config/local.yaml
+# config/local.yaml is in .gitignore and never goes into the repo.
+# The module loads config/vio.yaml first, then config/local.yaml on top of it: every key present
+# here replaces the same key in vio.yaml, everything else stays as in vio.yaml.
+
+origin:
+  # Coordinates rounded to the nearest city are enough (see docs/ARDUPILOT_SETUP.md, section 6).
+  # Must not stay 0, 0: the module refuses to send an origin of 0, 0.
+  latitude_deg: 0.0
+  longitude_deg: 0.0
+  altitude_m: 0.0
+
+mavlink:
+  device: /dev/serial/by-id/REPLACE_WITH_YOUR_FC
