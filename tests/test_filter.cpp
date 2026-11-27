@@ -12,6 +12,8 @@
 //     vibration, and not when the flag says "in the air", the image moves or the drone accelerates;
 //   - baro update: keeps the height of a drifting IMU, finds the baro offset, and gives no horizontal
 //     information (it is never a source of scale);
+//   - IMU gap noise (filter.imu_gap_noise): across a 0.5 s gap the velocity variance grows by about
+//     (accel sigma x gap)^2 with the switch on; without a gap the switch changes nothing;
 //   - static start and zero-velocity updates on a still, tilted IMU with a gyro bias: roll, pitch,
 //     yaw, gyro bias, position and velocity must come out right, and the covariance must cover the
 //     remaining errors.
@@ -471,6 +473,38 @@ void test_static_start() {
 
 }  // namespace
 
+// Velocity (index V) or attitude (TH) variance after 2 s of hovering IMU data at 200 Hz, with or
+// without a 0.5 s gap; only one of the two gap noise terms on, so each can be checked alone.
+double variance_after(int index, bool gap_noise, bool gap, double accel_sigma, double rate_sigma) {
+    vio::FilterConfig cfg;
+    cfg.gap_noise = gap_noise;
+    cfg.gap_accel_sigma = accel_sigma;
+    cfg.gap_rate_sigma = rate_sigma;
+    vio::Filter f(cfg, g_ned);
+    vio::State s0;
+    s0.t = 1'000'000'000;
+    f.init_from_state(s0);
+    for (int i = 0; i <= 400; ++i) {
+        vio::ImuSample m;
+        m.t = s0.t + static_cast<vio::Timestamp>(i) * 5'000'000;
+        if (gap && m.t > s0.t + 1'000'000'000 && m.t < s0.t + 1'500'000'000) continue;
+        m.accel = -g_ned;
+        f.add_imu(m);
+    }
+    return f.covariance()(index, index);
+}
+
+void test_gap_noise() {
+    const double gap = 0.495;  // between the samples on either side
+    const int V = vio::Filter::V, TH = vio::Filter::TH;
+    const double dv = variance_after(V, true, true, 0.4, 0) - variance_after(V, false, true, 0.4, 0);
+    const double dth = variance_after(TH, true, true, 0, 0.04) - variance_after(TH, false, true, 0, 0.04);
+    check(std::abs(dv / std::pow(0.4 * gap, 2) - 1) < 0.1 && std::abs(dth / std::pow(0.04 * gap, 2) - 1) < 0.1,
+          "IMU gap noise: extra velocity / attitude variance against (sigma x gap)^2", dv / std::pow(0.4 * gap, 2));
+    check(variance_after(V, true, false, 0.4, 0.04) == variance_after(V, false, false, 0.4, 0.04),
+          "IMU gap noise on, no gap: covariance unchanged", 0);
+}
+
 int main() {
     test_transition();
     test_feature_jacobian();
@@ -482,5 +516,6 @@ int main() {
     test_landed_zupt();
     test_baro();
     test_static_start();
+    test_gap_noise();
     return failures == 0 ? 0 : 1;
 }

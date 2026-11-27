@@ -4,11 +4,13 @@
 //   - imu_gap: the samples are removed from the session, and the gap reaches the quality monitor
 //     through the same IMU vector the replay hands it (summarize_imu, FAIL_IMU_GAP);
 //   - td_step: camera times shifted from the start on, still in order;
-//   - outliers: the share moved, each by exactly the given distance.
+//   - outliers: the share moved, each by exactly the given distance; with two windows each applies
+//     only inside its own.
 
 #include "vio/inject.h"
 #include "vio/quality.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <random>
@@ -136,6 +138,22 @@ void test_outliers() {
     }
     check(std::abs(moved / 10000.0 - 0.3) < 0.02 && exact, "outliers 0.3 / 8 px: about 30 % moved, each by 8 px",
           moved / 10000.0);
+    // Two windows: every observation moved, by 5 px in [1, 2) s and by 20 px in [3, 4) s, none between.
+    const std::vector<vio::Fault> two = {vio::parse_fault("outliers:1:1:1:5"), vio::parse_fault("outliers:3:1:1:20")};
+    auto moved_by = [&](double t_s) {
+        std::vector<vio::FeatureObs> g(50);
+        vio::apply_outliers(two, at(t_s), kRef, g, rng);
+        double lo = 1e9, hi = 0;
+        for (const auto& o : g) {
+            lo = std::min(lo, o.uv.norm());
+            hi = std::max(hi, o.uv.norm());
+        }
+        return std::make_pair(lo, hi);
+    };
+    const auto a = moved_by(1.5), b = moved_by(2.5), c = moved_by(3.5);
+    check(std::abs(a.first - 5) < 1e-9 && std::abs(a.second - 5) < 1e-9 && b.second == 0 &&
+              std::abs(c.first - 20) < 1e-9 && std::abs(c.second - 20) < 1e-9,
+          "two outlier windows: 5 px only in the first, 20 px only in the second", c.second);
 }
 
 }  // namespace

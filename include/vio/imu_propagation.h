@@ -7,7 +7,16 @@
 
 #include "vio/types.h"
 
+#include <vector>
+
 namespace vio {
+
+// Accel delay compensation (step 4 piece 3a; ARDUPILOT_SETUP.md section 2). The FC filters the accel
+// more than the gyro (20 Hz against 80 Hz low-pass, notches on the gyro only), so in its stream the
+// accel lags the gyro by shift_s = accel delay - gyro delay (about 6 ms). Each sample gets the accel
+// of the stream interpolated at t + shift_s, so both describe the same moment; the last samples,
+// which have nothing that late to take it from, are dropped. Returns how many were dropped.
+size_t shift_accel(std::vector<ImuSample>& imu, double shift_s);
 
 // Rotation for a rotation vector (axis * angle), exact for any angle.
 Eigen::Quaterniond quat_exp(const Eigen::Vector3d& rotvec);

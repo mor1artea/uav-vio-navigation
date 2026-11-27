@@ -77,6 +77,10 @@ FilterConfig filter_config(const YAML::Node& c, const ImuNoise& session_noise) {
     f.baro_inflate_above_climb = get(c, "filter.baro.inflate_above_climb_m_s", f.baro_inflate_above_climb);
     f.baro_inflate_factor = get(c, "filter.baro.inflate_factor", f.baro_inflate_factor);
     f.zupt_landed_accel_max = get(c, "filter.zupt.landed.accel_max", f.zupt_landed_accel_max);
+    f.gap_noise = get(c, "filter.imu_gap_noise.enabled", f.gap_noise);
+    f.gap_min_s = get(c, "quality.imu_gap_max_ms", f.gap_min_s * 1e3) * 1e-3;
+    f.gap_accel_sigma = get(c, "filter.imu_gap_noise.accel_sigma_m_s2", f.gap_accel_sigma);
+    f.gap_rate_sigma = get(c, "filter.imu_gap_noise.rate_sigma_rad_s", f.gap_rate_sigma);
     if (f.init_mode != "static" && f.init_mode != "ground_truth")
         throw std::runtime_error("filter.init.mode must be static or ground_truth");
     return f;

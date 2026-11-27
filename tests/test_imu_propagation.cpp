@@ -1,11 +1,15 @@
 // IMU propagation against motions with a known exact solution. Checks the frame and gravity
-// conventions, which everything later depends on.
+// conventions, which everything later depends on. Also the accel delay compensation (shift_accel):
+// an FC stream whose accel lags the gyro by 6 ms, with jittered stamps, lines up after the shift.
 
 #include "vio/imu_propagation.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <random>
+#include <vector>
 
 namespace {
 
@@ -48,6 +52,29 @@ void run(const Motion& m, const Eigen::Vector3d& g, double duration, double rate
 }
 
 }  // namespace
+
+// The same 2 Hz signal on gyro x and accel x, seen 7 ms (gyro) and 13 ms (accel) late, at 200 Hz
+// with stamps jittered by up to 2.5 ms. After shift_accel(6 ms) the accel must match the gyro.
+void test_shift_accel() {
+    std::vector<vio::ImuSample> imu;
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<double> jitter(0, 2.5e-3);
+    const double w = 2 * M_PI * 2;
+    for (int i = 0; i < 400; ++i) {
+        const double t = i * 0.005 + jitter(rng);
+        vio::ImuSample m;
+        m.t = static_cast<vio::Timestamp>(std::llround(t * 1e9));
+        m.gyro.x() = std::sin(w * (t - 0.007));
+        m.accel.x() = std::sin(w * (t - 0.013));
+        imu.push_back(m);
+    }
+    double before = 0, after = 0;
+    for (const auto& m : imu) before = std::max(before, std::abs(m.accel.x() - m.gyro.x()));
+    const size_t dropped = vio::shift_accel(imu, 0.006);
+    for (const auto& m : imu) after = std::max(after, std::abs(m.accel.x() - m.gyro.x()));
+    check(after < 2e-3 && before > 0.07 && dropped >= 1 && dropped <= 2,
+          "accel shifted by 6 ms: largest accel - gyro difference", after);
+}
 
 int main() {
     const Eigen::Vector3d g_ned(0, 0, 9.81);
@@ -92,6 +119,7 @@ int main() {
         check(pos_err < 0.01, "banked circle 10 m/s, 10 s: position error [m]", pos_err);
         check(rot_err < 1e-6, "banked circle 10 m/s, 10 s: rotation error [rad]", rot_err);
     }
+    test_shift_accel();
 
     std::printf("%s\n", failures == 0 ? "all ok" : "FAILED");
     return failures == 0 ? 0 : 1;

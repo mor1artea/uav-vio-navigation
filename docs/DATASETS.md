@@ -8,7 +8,12 @@ data, in this order:
 3. Later: our own recordings (Stage 1b) and the Gazebo simulation (SIMULATION.md).
 
 Everything lives outside the repo, in `~/datasets`. This document also says, just as important,
-what each kind of data can and cannot tell us about our drone.
+what each kind of data can and cannot tell us about our drone. Commands: section 8.
+
+Folders named `~/datasets/analysis/...` in this and other documents hold the runs and throwaway
+scripts of past experiments. They are on the project owner's machine only, not in the repo; the
+numbers quoted from them are the record. "You" and "your decision" in the documents mean the
+project owner.
 
 ## 1. Synthetic data (first)
 
@@ -536,8 +541,55 @@ What rests on synthetic data only (and how far it goes):
 - EuRoC is real data with a forward camera indoors and another IMU: it shows the filter survives
   real images and a real IMU, not how our drone will do.
 
-Left before step 4 (DESIGN.md section 11 lists the open items): the straight-leg scale problem
+Left after step 3 (DESIGN.md section 11 lists the open items): the straight-leg scale problem
 (cause found 2026-11-26, a bias of the visual update on flights without accelerations; the
-midpoint linearization removes most of it on synthetic data, switch off by default, decision open,
-DESIGN.md section 11), the takeoff (7 s on the IMU alone; C waits for our recordings), the baro speed term
+midpoint linearization removes most of it on synthetic data; decided: switch off until there is
+real data), the takeoff (7 s on the IMU alone; C waits for our recordings), the baro speed term
 (measure on our recordings), td and the IMU noise values from our recordings.
+
+## 8. Commands
+
+All from the repository root, after building (README.md). Every program writes only where `--out`
+says. Paths under `~/datasets` are examples; use any folder outside the repo.
+
+```
+# EuRoC MH_01_easy, downloaded by hand as a zip (ASL format), then unpacked:
+tools/prepare_euroc.sh ~/Downloads/MH_01_easy.zip          # into ~/datasets/euroc (DEST=... to change)
+
+# Filter on EuRoC (the drone is carried by hand at first: start at 22 s), then the covariance check
+build/vio_replay ~/datasets/euroc/MH_01_easy --mode vio --start 22 --config config/vio.yaml --config config/replay_euroc.yaml --out /tmp/mh01_vio.csv
+tools/consistency.py /tmp/mh01_vio.csv ~/datasets/euroc/MH_01_easy
+
+# Tracker alone on images, and track statistics against the ground truth (EuRoC looks forward: no sky mask)
+build/vio_track ~/datasets/euroc/MH_01_easy --no-sky-mask --start 22 --out /tmp/mh01_features.csv --stats /tmp/mh01_stats.csv
+tools/eval_tracks.py /tmp/mh01_features.csv /tmp/mh01_stats.csv ~/datasets/euroc/MH_01_easy
+
+# Rendered ground (down-looking camera, about 1 s per frame to render), replayed with the tracker inside
+tools/gen_synthetic.py ~/datasets/synthetic/fig8_tilt --speed 12 --radius 50 --height 25
+tools/render_ground.py ~/datasets/synthetic/fig8_tilt ~/datasets/synthetic/fig8_tilt_img
+build/vio_replay ~/datasets/synthetic/fig8_tilt_img --mode vio --config config/vio.yaml --config config/replay_synthetic.yaml --config config/replay_render.yaml --out /tmp/tilt_vio.csv
+
+# Repeated runs (single runs mislead): 20 start times or 20 generated seeds, median and range
+tools/eval_runs.py ~/datasets/euroc/MH_01_easy --starts $(seq 21 0.25 25.75) --configs config/vio.yaml config/replay_euroc.yaml --rpe-length 10 --out /tmp/eval_euroc
+tools/eval_runs.py --seeds $(seq 1 20) --gen "--scenario line --duration 420 --speed 12 --height 40 --radius 800 --density 0.004 --baro" --configs config/vio.yaml config/replay_synthetic.yaml --out /tmp/eval_line
+
+# Signed scale (estimated / true distance) of a run, and hover drift
+tools/scale.py /tmp/mh01_vio.csv ~/datasets/euroc/MH_01_easy
+tools/metrics.py /tmp/hover_vio.csv <session> --hover START END
+```
+
+- Replays always take `config/vio.yaml` plus one override: `replay_synthetic.yaml` (generated
+  sessions, start from the ground truth), `replay_euroc.yaml` (static start), `replay_sim.yaml`
+  (`sim/` flights); renders add `replay_render.yaml` (1 px pixel noise for real tracks). In
+  `eval_runs.py` put `--hover A B` after the config files: a config file after it is silently
+  dropped.
+- `vio_replay --inject` adds faults (blackout, frozen image, outliers, IMU gap, td step; see
+  `include/vio/inject.h`). `gen_synthetic.py --help` lists the scenarios (figure8, hover,
+  approach_hover, liftoff, line, loop) and options such as `--baro`, `--track-age` / `--drift-q`
+  (KLT-like track drift) and `--fc-imu` (the FC's filtered, delayed IMU stream).
+- Long runs (20 runs over km-long sessions, 121 EuRoC starts) take 10-40 min; start them detached
+  (`setsid nohup ... &`) so they survive a closed terminal.
+
+Checked 2026-11-27 on the current build: the EuRoC replay, consistency, vio_track, eval_tracks,
+scale.py and eval_runs.py with generated seeds. `prepare_euroc.sh`, `render_ground.py` and the render replay were not
+run in that check (they were used earlier to make the data above).

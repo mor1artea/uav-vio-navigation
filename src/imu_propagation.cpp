@@ -4,6 +4,27 @@
 
 namespace vio {
 
+size_t shift_accel(std::vector<ImuSample>& imu, double shift_s) {
+    const auto shift = static_cast<Timestamp>(std::llround(shift_s * 1e9));
+    std::vector<Eigen::Vector3d> accel(imu.size());
+    size_t n = 0, j = 0;
+    for (; n < imu.size(); ++n) {
+        const Timestamp t = imu[n].t + shift;
+        if (t > imu.back().t) break;
+        while (j + 1 < imu.size() && imu[j + 1].t < t) ++j;  // imu[j].t < t <= imu[j + 1].t
+        if (j + 1 >= imu.size() || imu[j].t >= t) {
+            accel[n] = imu[j].accel;  // shift 0, or t on the first sample
+            continue;
+        }
+        const double w = static_cast<double>(t - imu[j].t) / static_cast<double>(imu[j + 1].t - imu[j].t);
+        accel[n] = (1 - w) * imu[j].accel + w * imu[j + 1].accel;
+    }
+    const size_t dropped = imu.size() - n;
+    imu.resize(n);
+    for (size_t i = 0; i < n; ++i) imu[i].accel = accel[i];
+    return dropped;
+}
+
 Eigen::Quaterniond quat_exp(const Eigen::Vector3d& rotvec) {
     const double angle = rotvec.norm();
     if (angle < 1e-12) {

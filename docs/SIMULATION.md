@@ -61,9 +61,10 @@ comes for free once the SITL parameters match the FC:
   ESC RPM, so the per-motor notches track like on the drone. `SIM_VIB_MOT_MAX` / `SIM_VIB_FREQ` add
   motor vibration for the notches to work on.
 - `HIGHRES_IMU` from SITL is produced by the same code and stamped at send time like on the FC.
-- What is missing is added in our MAVLink input adapter, as a simulation-only option: the sensor's
-  internal filter delay (about 1 ms gyro, 1.5 ms accel), a random transport delay and jitter similar
-  to USB, and occasional gaps.
+- What is missing would be added in our MAVLink input adapter (not written yet), as a
+  simulation-only option: the sensor's internal filter delay (about 1 ms gyro, 1.5 ms accel), a
+  random transport delay and jitter similar to USB, and occasional gaps. For synthetic sessions the
+  generator already does this (`tools/gen_synthetic.py --fc-imu`, DESIGN.md section 11, "Piece 3").
 - IMU noise (checked in 4.6.3): the accelerometer gets a fixed uniform 0.01 m/s^2 per sample;
   `SIM_ACC1_RND` only scales simulated motor vibration (`SIM_VIB_*`); `SIM_GYR1_RND` adds gyro noise
   in deg/s times the throttle with the motors running. Matching our FC IMU (Allan variance,
@@ -73,9 +74,10 @@ comes for free once the SITL parameters match the FC:
 
 `sim/` holds the first part, recording only: setup, a textured world with wind, a flight script for
 SITL and the conversion into a session for `vio_replay` (`sim/README.md`). Moved before Stage 2 on
-your request. Not run in Gazebo yet; you run it on the Linux machine (code only here). Reviewed
+your request. Never run: neither `sim/setup.sh` nor any flight with Gazebo or SITL has been run
+with these scripts; only the offline parts were tested (end of `sim/README.md`). Reviewed
 against the ardupilot_gazebo, Gazebo Harmonic and Copter-4.6.3 sources on 2026-11-26 (what was
 checked and fixed: end of `sim/README.md`). The scale test (straight leg at constant speed, with and
 without wind) and its replay with the midpoint off and on are one command each (`sim/README.md`
 steps 6 and 7). Closed loop (sections 1 and 2) is not started: it needs the MAVLink output (Stage 3
-code) and the quality module (step 4).
+code). The quality module exists, offline only (step 4).

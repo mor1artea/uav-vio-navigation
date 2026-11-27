@@ -37,7 +37,7 @@ the route shape, not for the spec metrics.
 
 The recording does not depend on the logger. Any separate GNSS logger (or a phone app as a rough
 backup) records on its own; after the flight its file is copied into the session's `gnss/` folder,
-and `tools/align_gnss.py` aligns it in time: coarse by UTC against the Pi clock pairs in
+and `tools/align_gnss.py` (not written yet) aligns it in time: coarse by UTC against the Pi clock pairs in
 `clock.csv`, fine by correlating accelerations (details in RECORDING.md section 5). For the coarse
 step the Pi needs a correct wall clock on the day: the Pi 5 RTC with its backup battery, or a time
 sync before takeoff.

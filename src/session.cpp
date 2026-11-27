@@ -79,6 +79,7 @@ void load_imu(Session& s, const fs::path& dir) {
     s.imu_noise.accel_noise_density = y["accelerometer_noise_density"].as<double>();
     s.imu_noise.accel_random_walk = y["accelerometer_random_walk"].as<double>();
     s.imu_noise.rate_hz = y["rate_hz"].as<double>();
+    s.imu_fc_filtered = y["fc_filtered"] && y["fc_filtered"].as<bool>();
 }
 
 // Feature observations: timestamp, feature id, u, v. Rows of one frame are consecutive. Written by

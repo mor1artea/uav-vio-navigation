@@ -1,76 +1,79 @@
 # uav-vio-navigation
 
-Visual-inertial odometry for a down-looking camera on a Raspberry Pi 5, feeding position and
-velocity to ArduCopter over MAVLink on a drone without GNSS. Design and plan: `docs/DESIGN.md`.
+Visual-inertial odometry (VIO) for a small drone without GNSS. A camera looks straight down, a
+Raspberry Pi 5 tracks features and runs a filter together with the flight controller's IMU, and
+the goal is to send position and velocity to ArduCopter over MAVLink, so the drone can navigate
+for 2-5 km with no GPS at all.
 
-Current state: Stage 1a step 3 (the filter), stages 1-3 of 4 done. Replay, metrics, the front end
-and the filter work on synthetic data, rendered images and EuRoC.
+**Warning: this cannot run on a drone.** There is no camera capture, no MAVLink input or output,
+no recorder and no live program. Nothing has been flown or tested on the hardware. Everything in
+this repo runs offline, on recorded or generated data, on a Linux PC.
 
-## Build (laptop or Pi)
+## Hardware (target)
 
-Needs CMake, a C++17 compiler, Eigen 3, yaml-cpp and OpenCV 4. On Ubuntu:
-`sudo apt install cmake g++ ninja-build pkg-config libeigen3-dev libyaml-cpp-dev libopencv-dev`.
+- Flight controller: Stingbee Stellar H7V2, ArduCopter 4.6.3, one ICM-42688-P IMU, DPS310 baro,
+  external compass. No GPS, no rangefinder, no SD card logs.
+- Companion: Raspberry Pi 5 on the FC's USB port. Camera: IMX219 with a ~120 deg lens, looking
+  straight down (the mount is not built yet).
+
+## What works today (offline only)
+
+- `vio_replay`: replays a session (EuRoC folder layout) and runs the filter: IMU propagation, MSCKF
+  visual update, landmarks for hover, online camera-IMU time offset, weak baro update, quality
+  monitor (GOOD / DEGRADED / LOST, logged only), fault injection (`--inject`). Writes a CSV.
+- `vio_track`: the feature tracker (KLT with gyro prediction, sky mask) on a session's images.
+- Python tools: a synthetic session generator, a ground renderer, metrics (ATE, RPE, hover drift),
+  covariance consistency (NEES), repeated runs with median and range.
+- Tested on synthetic data, rendered ground images and one real public sequence (EuRoC MH_01_easy).
+  Results and their limits: `docs/DATASETS.md` sections 6-7 and `docs/HANDOFF.md`.
+- `sim/`: scripts for open-loop flights in ArduPilot SITL + Gazebo. **Never run with Gazebo**, and
+  `sim/setup.sh` was never run either.
+
+## What does not exist yet
+
+Camera capture, MAVLink I/O, the live module on the Pi, the Pi recorder and the converter from
+recordings to sessions, calibration of the real camera, any real recording from our drone, closed
+loop in simulation. `config/vio.yaml` already has sections for some of these (`camera`, `mavlink`,
+`origin`, `recording`, `logging`); no code reads them yet.
+
+## Build and test
+
+Linux (Ubuntu 22.04 / 24.04, native or WSL2). Needs CMake, a C++17 compiler, Eigen 3, yaml-cpp,
+OpenCV 4; the Python tools need Python 3 with numpy and PyYAML.
 
 ```
+sudo apt install cmake g++ ninja-build pkg-config libeigen3-dev libyaml-cpp-dev libopencv-dev python3-numpy python3-yaml
 cmake -S . -B build -G Ninja
 cmake --build build
 ctest --test-dir build
 ```
 
-The Python tools need Python 3 with numpy and PyYAML.
-
-## Generate, replay, measure
+## Quick run (synthetic, about 5 s)
 
 ```
-tools/gen_synthetic.py ~/datasets/synthetic/fig8
-build/vio_replay ~/datasets/synthetic/fig8 --mode imu --out /tmp/fig8_imu.csv
-tools/metrics.py /tmp/fig8_imu.csv ~/datasets/synthetic/fig8
+tools/gen_synthetic.py /tmp/fig8 --baro
+build/vio_replay /tmp/fig8 --mode vio --config config/vio.yaml --config config/replay_synthetic.yaml --out /tmp/fig8_vio.csv
+tools/metrics.py /tmp/fig8_vio.csv /tmp/fig8
+tools/consistency.py /tmp/fig8_vio.csv /tmp/fig8
 ```
 
-- `gen_synthetic.py` writes a session in the EuRoC folder layout with exact ground truth
-  (`--scenario figure8|hover`, `--no-noise`, `--camera equidistant|radial-tangential`, see `--help`).
-  `--track-age 72 --drift-q 0.1` makes the tracks behave like KLT tracks: re-detected after 72
-  frames and drifting with the view change (DESIGN.md section 13.4). `--scenario liftoff` stands on
-  the ground with the motors running, then climbs, and writes the FC landed flag (DESIGN.md
-  section 11, "Takeoff robustness"). `--scenario line` / `loop` fly km-long legs for the scale drift,
-  `--baro` adds a simulated baro (a guess, DATASETS.md section 1). `--scenario liftoff` stands on
-  the ground with the motors running, then climbs, and writes the FC landed flag
-  (`mav0/landed0/data.csv`), which `vio_replay` uses for zero-velocity updates on the ground.
-- `vio_replay` reads a session (synthetic or EuRoC) in time order and writes a trajectory.
-  `--mode gt` writes the ground truth (checks the chain), `--mode imu` integrates the IMU only.
-  `--start S` skips the first seconds (EuRoC MH: the drone is carried by hand at first, use 22),
-  `--features file` reads tracks from `vio_track` instead of the images.
-  `--mode vio` runs the filter. On a session with images and no `--features`, the tracker runs
-  inside the replay and gets the filter's attitude, gyro bias and landmarks, as in the live system:
-  `build/vio_replay ~/datasets/euroc/MH_01_easy --mode vio --start 22 --config config/vio.yaml --config config/replay_euroc.yaml --out /tmp/mh01_vio.csv`
-  then `tools/consistency.py /tmp/mh01_vio.csv ~/datasets/euroc/MH_01_easy` checks the covariance.
-  Rendered sessions also take `--config config/replay_render.yaml` (1 px pixel noise for real tracks).
-- `eval_runs.py` repeats a replay over several start times or synthetic seeds and prints median and
-  range. Single runs differ a lot, so results are quoted this way, over 20 runs:
-  `tools/eval_runs.py ~/datasets/euroc/MH_01_easy --starts $(seq 21 0.25 25.75) --configs config/vio.yaml config/replay_euroc.yaml --rpe-length 10 --out /tmp/eval_euroc`
-- `metrics.py` prints ATE (navigation and aligned), RPE on 100 m segments, loop closure error and,
-  with `--hover START END`, hover drift, graded against the spec thresholds.
+Expect about 0.15 % ATE and a position NEES of about 3-4 (honest is 3). Add `--inject blackout:40:3` to `vio_replay` to
+see the quality states react to a 3 s camera blackout. More commands (EuRoC, rendered images,
+repeated runs): `docs/DATASETS.md`. Data and generated sessions live outside the repo (default
+`~/datasets`); nothing large goes into git.
 
-## Front end (feature tracking on images)
+## Documents
 
-```
-build/vio_track ~/datasets/euroc/MH_01_easy --no-sky-mask --start 22 --out /tmp/mh01_features.csv --stats /tmp/mh01_stats.csv
-tools/eval_tracks.py /tmp/mh01_features.csv /tmp/mh01_stats.csv ~/datasets/euroc/MH_01_easy
-build/vio_replay ~/datasets/euroc/MH_01_easy --features /tmp/mh01_features.csv --mode gt --out /tmp/mh01_gt.csv
-```
+Reading order: this file, then `docs/HANDOFF.md`, then the first part of `docs/DESIGN.md`.
 
-- `vio_track` runs the tracker on the images of a session and writes the tracks (same format as the
-  synthetic `features.csv`) and per-frame quality numbers. Settings come from `config/vio.yaml`;
-  `--no-gyro`, `--clahe` / `--no-clahe`, `--frame-step N` for comparisons; `--no-sky-mask` for
-  EuRoC, whose camera looks forward.
-- `eval_tracks.py` prints track lengths, success rate, forward-backward error, grid coverage, time
-  per frame and, with the session, the share of wrong tracks against the ground truth.
-- `render_ground.py` renders ground images for a synthetic session (down-looking camera over flat
-  textured ground), so the tracker can be checked in our own geometry:
-
-```
-tools/gen_synthetic.py ~/datasets/synthetic/fig8_tilt --speed 12 --radius 50 --height 25
-tools/render_ground.py ~/datasets/synthetic/fig8_tilt ~/datasets/synthetic/fig8_tilt_img
-```
-
-Datasets and generated sessions live outside the repo, in `~/datasets`.
+| Document | What it is |
+|---|---|
+| `docs/HANDOFF.md` | Current state, what is left, known problems, rules. Start here |
+| `docs/DESIGN.md` | Design (sections 1-10) and the work plan with a journal of every experiment (section 11 on) |
+| `docs/DATASETS.md` | Data sources, what each can show, how to run them, filter results |
+| `docs/ARDUPILOT_SETUP.md` | What ArduPilot 4.6.3 does with our data, FC parameters to apply by hand, pilot procedure |
+| `docs/RECORDING.md` | Specification of the Pi recorder (not built) |
+| `docs/CALIBRATION.md` | How to calibrate camera, camera-IMU and IMU noise (not done yet) |
+| `docs/GROUND_TRUTH.md` | How flights will get ground truth (GNSS logger, not chosen yet) |
+| `docs/SIMULATION.md` | SITL + Gazebo assessment; `sim/README.md` has the step-by-step scripts |
+| `docs/THIRD_PARTY.md` | Licenses, borrowed code (none so far), rules for copying code |

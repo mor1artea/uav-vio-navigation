@@ -215,6 +215,7 @@ int main(int argc, char** argv) {
     double max_flag_age_s = 0.1;
     int update_stride = 1;
     bool quality_on = true;
+    double accel_shift_s = 0;  // accel delay compensation, used for sessions with an FC-filtered IMU
     vio::QualityConfig quality_cfg;
     double rate_window_s = 0.03;
     try {
@@ -225,6 +226,9 @@ int main(int argc, char** argv) {
         tracker_cfg = vio::tracker_config(cfg);
         quality_cfg = vio::quality_config(cfg);
         if (cfg["quality"] && cfg["quality"]["enabled"]) quality_on = cfg["quality"]["enabled"].as<bool>();
+        const YAML::Node imu_cfg = cfg["imu"];
+        if (imu_cfg && imu_cfg["accel_delay_compensation"] && imu_cfg["accel_delay_compensation"].as<bool>())
+            accel_shift_s = (imu_cfg["accel_delay_ms"].as<double>(0) - imu_cfg["gyro_delay_ms"].as<double>(0)) * 1e-3;
         if (cfg["filter"]["update_stride"]) update_stride = std::max(1, cfg["filter"]["update_stride"].as<int>());
         if (cfg["imu"]["td_rate_window_ms"]) rate_window_s = cfg["imu"]["td_rate_window_ms"].as<double>() * 1e-3;
         if (cfg["filter"]["zupt"]["image_motion_max_px"])
@@ -234,6 +238,12 @@ int main(int argc, char** argv) {
     } catch (const std::exception& e) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
+    }
+    // Accel delay compensation (vio/imu_propagation.h), before anything reads the IMU.
+    if (session.imu_fc_filtered && accel_shift_s != 0) {
+        const size_t dropped = vio::shift_accel(session.imu, accel_shift_s);
+        std::printf("imu          FC stream: accel shifted by %.1f ms onto the gyro (%zu samples dropped at the end)\n",
+                    accel_shift_s * 1e3, dropped);
     }
     // Faults are timed from the first IMU sample of the session as loaded (before any gap is cut).
     const vio::Timestamp t_fault_ref = session.imu.empty() ? 0 : session.imu.front().t;
@@ -372,9 +382,7 @@ int main(int argc, char** argv) {
             ms_track_sum += k.ms_track;
             ++n_tracked;
         }
-        for (const auto& fl : faults)
-            if (fl.kind == vio::Fault::OUTLIERS && (frame_faults & (1u << vio::Fault::OUTLIERS)))
-                vio::move_outliers(f.features, fl.share, fl.px, outlier_rng);
+        vio::apply_outliers(faults, frame.t, t_fault_ref, f.features, outlier_rng);
         t_prev_imu = t_imu;
         // The visual update runs on every update_stride-th frame only (the tracker on all of them):
         // the same number of clones then spans a longer time, which gives slow flight and the

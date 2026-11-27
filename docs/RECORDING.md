@@ -97,7 +97,7 @@ is reached.
 ## 5. External GNSS log
 
 The recorder does not talk to the GNSS logger. After the flight its log is copied into `gnss/`, and
-`tools/align_gnss.py` aligns it in time:
+`tools/align_gnss.py` (not written yet) aligns it in time:
 
 1. Coarse: GNSS UTC time against the `clock.csv` pairs. This needs a correct Pi wall clock: either the
    Pi 5 RTC with its backup battery, or a time sync before the flight (phone hotspot and chrony).
@@ -120,7 +120,8 @@ latency or CPU numbers only make sense on the Pi.
 EuRoC and TUM-VI are read by a small adapter that turns their folders into the same internal
 messages. Datasets live outside the repo (default `~/datasets`), see DATASETS.md.
 
-Today `vio_replay` reads the EuRoC folder layout. For our recordings a converter (not written yet)
+Today `vio_replay` reads the EuRoC folder layout, runs as fast as possible only (no real-time
+mode) and has no live system to share code paths with yet. For our recordings a converter (not written yet)
 will write the same layout from `frames.bin` and `mavlink.tlog`, including the FC landed state as
 `mav0/landed0/data.csv`: `#timestamp [ns],landed_state`, one row per `EXTENDED_SYS_STATE`, the
 FC send time mapped to the IMU clock (section 3), `landed_state` as in MAV_LANDED_STATE (1 on the

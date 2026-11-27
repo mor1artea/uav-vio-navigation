@@ -33,6 +33,9 @@ struct Session {
     std::vector<std::pair<Timestamp, double>> baro;
     CameraInfo camera;
     ImuNoise imu_noise;
+    // The IMU is the FC's filtered stream (imu0/sensor.yaml "fc_filtered: true"): its accel lags its
+    // gyro, see shift_accel(). False for raw IMU data (EuRoC, our generator without --fc-imu).
+    bool imu_fc_filtered = false;
     // EuRoC uses a z-up world, so gravity is (0, 0, -9.81). Our own sessions use NED and say so
     // in session.yaml: (0, 0, +9.81).
     Eigen::Vector3d gravity_world = Eigen::Vector3d(0, 0, -9.81);

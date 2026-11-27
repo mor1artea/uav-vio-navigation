@@ -49,6 +49,19 @@ drone's shadow); such frames are written as one row with feature id -1. The FC l
 on the ground (MAV_LANDED_STATE_ON_GROUND), 2 = in the air; it clears --landed-clear s after
 the liftoff (negative: before it, as in Stabilize and Acro; positive: late, as AltHold can be).
 
+FC IMU stream (--fc-imu, step 4 piece 3b; ARDUPILOT_SETUP.md section 2): the IMU as our FC sends it
+in HIGHRES_IMU, instead of a raw IMU. The signal (with the same noise densities and biases) is made at
+5 times the IMU rate, then per sensor delayed and low-pass filtered (first order at --fc-gyro-lpf and
+--fc-accel-lpf Hz, like INS_GYRO_FILTER and INS_ACCEL_FILTER), so that the total delay at low
+frequencies is --fc-gyro-delay and --fc-accel-delay ms (a pure delay plus the filter's own delay),
+and sampled at the IMU rate. Each sample is stamped up to --fc-jitter ms late (sent later in the FC
+loop, uniform), and --fc-gaps per minute samples are missing for --fc-gap-ms (uniform between the two
+values; USB hiccups, a guess). Own random stream: world, features, ground truth and baro are those of
+the same session without --fc-imu. imu0/sensor.yaml then says fc_filtered: true (vio_replay then
+shifts the accel onto the gyro, imu.accel_delay_compensation) and lists the settings and the gaps.
+The ground truth stays at the true sample times; the IMU is late against it by the gyro delay plus
+the mean jitter, which is what td has to absorb.
+
 Example:
   tools/gen_synthetic.py ~/datasets/synthetic/fig8 --scenario figure8 --speed 10 --laps 1
 """
@@ -316,6 +329,68 @@ def project(pc, cam):
     return np.stack([u, v], axis=1), valid
 
 
+def imu_clean(traj, t, args):
+    """Exact gyro (body rate) and accel (specific force, body frame) of the trajectory at times t."""
+    _, _, a, yaw = traj(t, args)
+    R = attitude(a, yaw)
+    h = 1e-4  # central difference for the body rates
+    R_minus = attitude(traj(t - h, args)[2], traj(t - h, args)[3])
+    R_plus = attitude(traj(t + h, args)[2], traj(t + h, args)[3])
+    gyro = log_so3(np.einsum("nji,njk->nik", R_minus, R_plus)) / (2 * h)
+    accel = np.einsum("nji,nj->ni", R, a - GRAVITY)  # R^T (a - g)
+    return gyro, accel
+
+
+def low_pass(x, cutoff_hz, dt, block=256):
+    """First-order low-pass y[n] = y[n-1] + alpha (x[n] - y[n-1]), started at x[0]; in blocks, vectorized."""
+    alpha = 1 - math.exp(-2 * math.pi * cutoff_hz * dt)
+    r = 1 - alpha
+    k = np.arange(block)
+    L = np.tril(alpha * r ** (k[:, None] - k[None, :]).clip(min=0))   # y_block = L x_block + r^(n+1) y_prev
+    carry = r ** (k + 1)
+    y = np.empty_like(x)
+    prev = x[0].copy()
+    for i in range(0, len(x), block):
+        xb = x[i:i + block]
+        n = len(xb)
+        y[i:i + n] = L[:n, :n] @ xb + carry[:n, None] * prev
+        prev = y[i + n - 1]
+    return y
+
+
+def fc_imu_stream(traj, args, t, bg, ba, noise, is_liftoff):
+    """The IMU as the FC sends it (--fc-imu, see the top). Returns stamps (s, from the start), gyro,
+    accel, and the gaps [(start s, length s)]."""
+    rng = np.random.default_rng([args.seed, 6])
+    fine = 5
+    dt_f = 1 / (args.imu_rate * fine)
+    tf = np.arange(len(t) * fine) * dt_f
+    out = []
+    for i, (delay_ms, cutoff, density, bias, vib) in enumerate((
+            (args.fc_gyro_delay, args.fc_gyro_lpf, noise["gyroscope_noise_density"], bg, args.vibration_gyro),
+            (args.fc_accel_delay, args.fc_accel_lpf, noise["accelerometer_noise_density"], ba, args.vibration))):
+        r = math.exp(-2 * math.pi * cutoff * dt_f)
+        pure = delay_ms * 1e-3 - r / (1 - r) * dt_f  # minus the delay of the discrete low-pass below
+        if pure < 0:
+            sys.exit(f"error: --fc delay {delay_ms} ms is shorter than the low-pass delay at {cutoff} Hz")
+        ts = tf - pure
+        x = imu_clean(traj, ts, args)[i]
+        if not args.no_noise:
+            x = x + np.stack([np.interp(ts, t, bias[:, j]) for j in range(3)], axis=1)
+            x = x + rng.normal(0, density / math.sqrt(dt_f), x.shape)
+        if is_liftoff:  # the same vibration per sample at 200 Hz as without --fc-imu (own stream)
+            x = x + (ts >= args.still_time)[:, None] * rng.normal(0, vib * math.sqrt(fine), x.shape)
+        out.append(low_pass(x, cutoff, dt_f)[::fine])
+    stamps = t + rng.uniform(0, args.fc_jitter * 1e-3, len(t))
+    gaps = []
+    for _ in range(rng.poisson(args.fc_gaps * t[-1] / 60)):
+        gaps.append((float(rng.uniform(0, t[-1])), float(rng.uniform(*args.fc_gap_ms) * 1e-3)))
+    keep = np.ones(len(t), bool)
+    for g0, gl in gaps:
+        keep &= ~((t >= g0) & (t < g0 + gl))
+    return stamps[keep], out[0][keep], out[1][keep], sorted(gaps)
+
+
 def camera_setup(model):
     if model == "equidistant":  # about 120-130 deg, like the IMX219 wide lens
         return dict(model="equidistant", fx=340.0, fy=340.0, cx=320.0, cy=240.0,
@@ -381,6 +456,14 @@ def main():
                     help="line, loop: speed changes or S-turns")
     ap.add_argument("--manoeuvre-period", type=float, default=40.0, help="line, loop: period, s")
     ap.add_argument("--baro", action="store_true", help="also write a simulated baro (mav0/baro0), see above")
+    ap.add_argument("--fc-imu", action="store_true", help="the IMU as the FC sends it, see the top")
+    ap.add_argument("--fc-gyro-delay", type=float, default=7.0, help="--fc-imu: gyro delay, ms")
+    ap.add_argument("--fc-accel-delay", type=float, default=13.0, help="--fc-imu: accel delay, ms")
+    ap.add_argument("--fc-gyro-lpf", type=float, default=80.0, help="--fc-imu: gyro low-pass, Hz")
+    ap.add_argument("--fc-accel-lpf", type=float, default=20.0, help="--fc-imu: accel low-pass, Hz")
+    ap.add_argument("--fc-jitter", type=float, default=2.5, help="--fc-imu: stamps up to this late, ms")
+    ap.add_argument("--fc-gaps", type=float, default=1.0, help="--fc-imu: IMU gaps per minute")
+    ap.add_argument("--fc-gap-ms", type=float, nargs=2, default=[20.0, 60.0], help="--fc-imu: gap length range, ms")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--force", action="store_true", help="overwrite the output folder")
     args = ap.parse_args()
@@ -405,11 +488,7 @@ def main():
     t = np.arange(n_imu) / args.imu_rate
     p, v, a, yaw = traj(t, args)
     R = attitude(a, yaw)
-    h = 1e-4  # central difference for the body rates
-    R_minus = attitude(traj(t - h, args)[2], traj(t - h, args)[3])
-    R_plus = attitude(traj(t + h, args)[2], traj(t + h, args)[3])
-    gyro = log_so3(np.einsum("nji,njk->nik", R_minus, R_plus)) / (2 * h)
-    accel = np.einsum("nji,nj->ni", R, a - GRAVITY)  # R^T (a - g)
+    gyro, accel = imu_clean(traj, t, args)
 
     # IMU noise (config/vio.yaml placeholders) and bias random walk.
     noise = dict(gyroscope_noise_density=0.004, gyroscope_random_walk=0.0002,
@@ -517,13 +596,23 @@ def main():
         os.makedirs(os.path.join(out, d), exist_ok=True)
     t_ns = t0_ns + np.round(t * 1e9).astype(np.int64)
 
+    imu_t_ns, imu_gyro, imu_accel, extra = t_ns, gyro, accel, {}
+    if args.fc_imu:
+        st, imu_gyro, imu_accel, gaps = fc_imu_stream(traj, args, t, bg, ba, noise, is_liftoff)
+        imu_t_ns = t0_ns + np.round(st * 1e9).astype(np.int64)
+        extra = dict(fc_filtered=True,
+                     fc_settings=dict(gyro_delay_ms=args.fc_gyro_delay, accel_delay_ms=args.fc_accel_delay,
+                                      gyro_lpf_hz=args.fc_gyro_lpf, accel_lpf_hz=args.fc_accel_lpf,
+                                      jitter_ms=args.fc_jitter),
+                     fc_gaps=[dict(start_s=round(g0, 3), length_ms=round(gl * 1e3, 1)) for g0, gl in gaps])
     write_csv(os.path.join(out, "mav0/imu0/data.csv"),
               "#timestamp [ns],w_RS_S_x [rad s^-1],w_RS_S_y [rad s^-1],w_RS_S_z [rad s^-1],"
               "a_RS_S_x [m s^-2],a_RS_S_y [m s^-2],a_RS_S_z [m s^-2]",
-              np.column_stack([t_ns, gyro, accel]), ["%d"] + ["%.9f"] * 6)
+              np.column_stack([imu_t_ns, imu_gyro, imu_accel]), ["%d"] + ["%.9f"] * 6)
     write_yaml(os.path.join(out, "mav0/imu0/sensor.yaml"),
-               dict(sensor_type="imu", comment="synthetic", rate_hz=args.imu_rate,
-                    T_BS=dict(cols=4, rows=4, data=np.eye(4).ravel().tolist()), **noise))
+               dict(sensor_type="imu", comment="synthetic, FC IMU stream (--fc-imu)" if args.fc_imu else "synthetic",
+                    rate_hz=args.imu_rate, T_BS=dict(cols=4, rows=4, data=np.eye(4).ravel().tolist()),
+                    **noise, **extra))
 
     q = rot_to_quat(R)
     write_csv(os.path.join(out, "mav0/state_groundtruth_estimate0/data.csv"),

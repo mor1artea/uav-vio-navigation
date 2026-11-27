@@ -38,6 +38,9 @@ struct Fault {
 // Parses one spec as above; throws std::runtime_error with a readable message.
 Fault parse_fault(const std::string& spec);
 
+// Whether this fault is active at time t (camera time for frame faults); td_step lasts.
+bool fault_active(const Fault& f, Timestamp t, Timestamp t_ref);
+
 // Bit (1 << kind) for every fault active at time t (camera time for frame faults); t_ref is the first
 // IMU sample. td_step counts as active from its start on.
 unsigned active_faults(const std::vector<Fault>& faults, Timestamp t, Timestamp t_ref);
@@ -47,5 +50,9 @@ void apply_session_faults(Session& s, const std::vector<Fault>& faults, Timestam
 
 // Moves each observation with probability share by px pixels in a random direction.
 void move_outliers(std::vector<FeatureObs>& features, double share, double px, std::mt19937& rng);
+
+// Every outliers fault active at time t, each with its own share and distance.
+void apply_outliers(const std::vector<Fault>& faults, Timestamp t, Timestamp t_ref,
+                    std::vector<FeatureObs>& features, std::mt19937& rng);
 
 }  // namespace vio

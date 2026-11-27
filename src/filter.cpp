@@ -70,6 +70,8 @@ Filter::Filter(const FilterConfig& cfg, const Eigen::Vector3d& gravity_world)
 
 void Filter::add_imu(const ImuSample& s) {
     detector_.add(s);
+    const double gap = last_real_t_ > 0 ? to_sec(s.t - last_real_t_) : 0;
+    last_real_t_ = s.t;
     if (!initialized_) {
         last_ = s;
         return;
@@ -77,7 +79,7 @@ void Filter::add_imu(const ImuSample& s) {
     zupt_gyro_sum_ += s.gyro;
     zupt_accel_sum_ += s.accel;
     ++zupt_gyro_n_;
-    propagate_one(s);
+    propagate_one(s, gap);
 }
 
 void Filter::propagate_to(Timestamp t, const ImuSample* next) {
@@ -92,7 +94,8 @@ void Filter::propagate_to(Timestamp t, const ImuSample* next) {
         s.gyro = (1 - w) * last_.gyro + w * next->gyro;
         s.accel = (1 - w) * last_.accel + w * next->accel;
     }
-    propagate_one(s);  // not given to the still detector or the zero-velocity sums
+    const double gap = next && last_real_t_ > 0 ? to_sec(next->t - last_real_t_) : 0;
+    propagate_one(s, gap);  // not given to the still detector or the zero-velocity sums
 }
 
 Eigen::Matrix<double, 6, 1> clone_td_jacobian(const State& s, const Eigen::Vector3d& rate_body) {
@@ -104,7 +107,7 @@ Eigen::Matrix<double, 6, 1> clone_td_jacobian(const State& s, const Eigen::Vecto
     return J;
 }
 
-void Filter::propagate_one(const ImuSample& s) {
+void Filter::propagate_one(const ImuSample& s, double gap_s) {
     // Propagation of the mean and of the covariance, one IMU interval.
     const auto t0 = std::chrono::steady_clock::now();
     const State s0 = prop_.state();
@@ -145,6 +148,12 @@ void Filter::propagate_one(const ImuSample& s) {
             Eigen::Vector3d::Constant(std::pow(cfg_.imu.accel_noise_density, 2)),
             Eigen::Vector3d::Constant(std::pow(cfg_.imu.gyro_random_walk, 2)),
             Eigen::Vector3d::Constant(std::pow(cfg_.imu.accel_random_walk, 2));
+        if (cfg_.gap_noise && gap_s > cfg_.gap_min_s) {
+            // As white noise of density sigma^2 * gap over each piece of the gap (the pieces add up to
+            // the gap), the velocity and attitude variance grows by (sigma * gap)^2 over the gap.
+            qc.head<3>().array() += cfg_.gap_rate_sigma * cfg_.gap_rate_sigma * gap_s;
+            qc.segment<3>(3).array() += cfg_.gap_accel_sigma * cfg_.gap_accel_sigma * gap_s;
+        }
         const Eigen::Matrix<double, 15, 15> Qd = G * qc.asDiagonal() * G.transpose() * dt;
         const Eigen::Matrix<double, 15, 15> Q = 0.5 * (F * Qd * F.transpose() + Qd);  // trapezoid
 

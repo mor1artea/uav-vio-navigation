@@ -4,8 +4,8 @@ Flies a simulated drone and records the camera, the FC IMU, baro, landed flag an
 as a session that `vio_replay` reads. Open loop: our module does not steer the drone and sends
 nothing to SITL. Closed loop (ODOMETRY back into EKF3) comes later, see `docs/SIMULATION.md`.
 
-**State (2026-11-26): never run in Gazebo.** What was checked without running it is at the end of this
-file. The first run will show what is still wrong; the steps below say what you should see and what
+**State (2026-11-26): never run.** Neither `sim/setup.sh` nor any flight with Gazebo or SITL has been
+run with these scripts. What was checked without running it is at the end of this file. The first run will show what is still wrong; the steps below say what you should see and what
 to send back when it is not that.
 
 ## Needed

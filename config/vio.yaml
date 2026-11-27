@@ -48,6 +48,8 @@ imu:
   gyro_delay_ms: 7.0             # 4.8-9.9 depending on motor RPM (notches). TODO: set from the hover RPM in the first log
   gyro_delay_no_notch_ms: 3.7    # motors stopped (bench, calibration): notches are off
   accel_delay_ms: 13.0           # 12.8-13.4, no notches on the accel
+  accel_delay_compensation: true # shift the accel by (accel_delay_ms - gyro_delay_ms); only for sessions whose
+                                 # imu0/sensor.yaml says fc_filtered: true (our FC stream). Raw IMU data: no effect
   td_initial_ms: 0.0             # camera-IMU time offset against the gyro. TODO: from Kalibr or the gyro cross-correlation (CALIBRATION.md step 3)
   td_prior_sigma_ms: 30.0        # uncertainty of td_initial_ms. Large: camera, USB and FC time stamping may add tens of ms
   td_estimate_online: true       # false: td stays at td_initial_ms
@@ -112,6 +114,16 @@ filter:
     sigma_max_px: 4.0            # later observations of a track whose modelled sigma exceeds this are not used
   midpoint_linearization: false  # visual update: Jacobians halfway between prior and update (msckf.h,
                                  # DESIGN.md section 11). Off: today's EKF linearization at the prior
+  imu_gap_noise:                 # extra process noise across IMU gaps longer than quality.imu_gap_max_ms
+    enabled: false               # (filter.h; DESIGN.md section 11, "Piece 2"). Off: as before
+    accel_sigma_m_s2: 0.4        # how far the true mean acceleration over the gap can be from the two edge
+                                 # samples, per axis. 0.4: the noise of one synthetic IMU sample (0.04
+                                 # m/s^2/sqrt(Hz) at 200 Hz: 0.57, measured 0.54) / sqrt(2) for the mean of
+                                 # the two edge samples; the synthetic motion itself changes too slowly to
+                                 # matter (jerk 0.3 m/s^3 on figure8). Ours: the sample noise of the FC
+                                 # stream with motors running, plus the motion change (jerk x gap / 2),
+                                 # once we have recordings
+    rate_sigma_rad_s: 0.04       # the same for the angular rate (0.004 rad/s/sqrt(Hz): 0.057, measured 0.054)
   origin_shift_distance_m: 100.0 # positions inside the filter are kept relative to an origin that moves to
                                  # the drone beyond this distance (filter.h); <= 0: the origin stays at the start
   imu_noise_from_session: false  # datasets: take the IMU noise from imu0/sensor.yaml instead of imu: above

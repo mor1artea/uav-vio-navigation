@@ -1,6 +1,23 @@
 # VIO module design (Stage 0)
 
-Status: Stage 0 approved 2026-11-23. Code in progress, Stage 1a; where it stands is in section 11.
+How to read this document (note added 2026-11-27 for new readers):
+
+- Sections 1-10 are the design: why this approach, startup without GNSS, scale, the camera,
+  the architecture of the live module (not written yet), output and quality states, latency, risks.
+  Read sections 2, 4, 6 and 7 first.
+- Section 11 starts with the work plan and then becomes an experiment journal: every stage, with its
+  numbers, findings, corrections and decisions, in the order they happened. Later entries can
+  correct earlier ones. For the current state read `docs/HANDOFF.md`; use section 11 to look up the
+  details behind a number or a decision. The step 4 entries ("Step 4 plan", "Piece 1-3", "IMU gap
+  noise") are the newest.
+- Section 13 is the dynamic covariance proposal and its measurements; part a is built (off).
+- "You" and "your decision" mean the project owner. Folders named `~/datasets/analysis/...` hold
+  the runs and throwaway scripts of past experiments; they are on the owner's machine, not in the
+  repo.
+
+Status: Stage 0 approved 2026-11-23. Stage 1a (offline VIO on a PC) in progress: steps 1-3 done,
+step 4 pieces 1-3 done (piece 3 and the IMU gap noise switch not reviewed yet), piece 4 and step 5
+left. Nothing of the live module exists yet.
 
 Goal: a VIO module on a Raspberry Pi 5 that gives ArduCopter position and velocity over MAVLink
 on a drone that has no GNSS at all, for real 2-5 km flights. The FC keeps attitude (IMU + external
@@ -336,6 +353,11 @@ Between camera updates we send IMU-propagated outputs, so the 30 Hz rate does no
 frame rate. Build flags `-O2 -mcpu=cortex-a76`. Optimization only after `perf` profiling.
 
 ## 9. Repository layout
+
+Planned layout. Today `src/` has the offline parts only (session reader, front end, filter, MSCKF,
+quality monitor, fault injection, the `vio_replay` and `vio_track` programs); capture, MAVLink I/O,
+the logger, `main`, `third_party/` and the MAVLink submodule do not exist yet. `sim/` holds the
+SITL + Gazebo scripts.
 
 ```
 src/         C++ sources (capture, tracking, estimator, quality, mavlink_io, logger, main)
@@ -1249,8 +1271,9 @@ Pixel noise value: the data do not support lowering the 1 px while the drift is 
 part a is used, the white value should be the measured white part of our camera (0.2 px on the normal
 render, 1.0 px on the low-contrast one: it depends on the image), not one number for all.
 
-**Step 4 plan (approved 2026-11-26 with the changes below; piece 1 implemented, see "Piece 1" after
-the plan).** Quality
+**Step 4 plan (approved 2026-11-26 with the changes below; pieces 1-3 implemented, see "Piece 1" to
+"Piece 3" after the plan; piece 3 and the IMU gap noise switch not reviewed yet; piece 4 not
+started).** Quality
 module with GOOD / DEGRADED / LOST, fault injection, the accel delay compensation, "FC IMU"
 degradation, recovery when every track is rejected (option D). Kept small; offline only (replay), no
 MAVLink, nothing on the FC or the Pi.
@@ -1526,8 +1549,10 @@ fault bits) is added at the end; without it the output is unchanged.
 | td step +20 ms | all three | not detected | | | | | unchanged (render NEES pos 4.1 against 3.0) |
 
 - Blackouts: DEGRADED at the first frame, LOST when the 2 s since the last good frame are over (1.8-2
-  s after the start), out of LOST 0.8 s after a 3 s blackout and 1.6-2.4 s after a 10 s one: the
-  1-3 s target of section 7 is met. 1 s blackouts never reach LOST.
+  s after the start). Out of LOST, as medians: 0.8 s after a 3 s blackout and 1.6-2.4 s after a 10 s
+  one, so the 1-3 s target of section 7 is met in the median, not in every run: on the straight leg
+  the range after a 3 s blackout is 0.8-6.2 s (its own sparse ground follows in some runs; 1.8-3.0 s
+  after 10 s). Figure8 and the render: 0.8-0.9 and 1.6-2.0 s. 1 s blackouts never reach LOST.
 - G1 (the covariance through the gap, per second, median over the runs): through every blackout the
   velocity errors stay inside 3 sigma (100 %) and the position NEES falls (figure8 3.0 to 1.8-2.2,
   render 3 to 0.8-1.3, straight 5.5 to 4.3): cautious, not overconfident. After the return it is
@@ -1546,8 +1571,12 @@ fault bits) is added at the end; without it the output is unchanged.
   gap is in the IMU window (one or two frames), then GOOD again after 1.1 s. 0.1 s gaps change nothing.
 - td step: the filter treats td as a constant (prior sigma, no process noise; its sigma is about
   1.5 ms after the start), so the estimate does not follow a later step (figure8 0.4 ms before, 0.1
-  ms at the end; straight 2.4 / 3.0), and the monitor's td-change check cannot fire. The effect on
-  these sessions is small (ATE unchanged, render NEES 4.1 against 3.0).
+  ms at the end; straight 2.4 / 3.0), and the monitor's td-change check cannot fire. Nothing detects a
+  td step, so nothing would trigger a D2 restart for it either. The effect on these sessions is
+  small (ATE unchanged, render NEES 4.1 against 3.0). Your decision (2026-11-27): nothing.
+- Fixed after the review: vio_replay applied every outliers fault whenever any outliers fault was
+  active; now each one only inside its own window (`apply_outliers`, unit check with two windows).
+  The runs above had one outliers fault each, so they are not affected.
 
 LOST exit (your item 3). Replayed offline from the logged checks with other exit rules (`lost_table.py`):
 
@@ -1556,7 +1585,29 @@ LOST exit (your item 3). Replayed offline from the logged checks with other exit
 | L0 (as built) | LOST left only to GOOD, 5 good frames in a row | none | 13.3 %, 30 (28-34) | 13.9 %, 19 | 0.8 / 1.6-2.4 | long LOST on marginal texture; the FC's EKF gives up after about 8 s without data (ARDUPILOT_SETUP.md section 9) |
 | L1 | LOST to DEGRADED on the first good frame, GOOD after 5 in a row | 2 lines | 10.0 %, 22.5 (17-34) | 10.8 %, 15 | 0.2 / 0.8-1.4 | one good frame among bad ones restarts fusing (DEGRADED is fused); LOST and DEGRADED can alternate frame by frame |
 | L2 | LOST left after 5 good frames among the last 7 | about 10 lines | 12.8 %, 30 | 13.4 %, 18.5 | 0.8 / 1.6-2.4 | hardly changes anything here; lets intermittent bad frames through |
-| L3 | the 2 s rule counts a frame with at least 10 features whose only failures are the feature count or the grid cells as usable (DEGRADED, not LOST) | about 5 lines, one more placeholder (10) | 0 %, 0 | 0 %, 0 | 0.8 / 1.6-2.4 (a blackout has 0 features) | a camera that slowly loses texture stays DEGRADED, and is fused, until it has fewer than 10 features |
+| L3 | the 2 s rule counts a frame with at least 10 features whose only failures are the feature count or the grid cells as usable (DEGRADED, not LOST) | about 5 lines, one more placeholder (10) | 0 %, 0 | 0 %, 0 | 0.8 / 1.6-2.4 (a blackout has 0 features) | a camera that slowly loses texture stays DEGRADED, and is fused, until it has fewer than 10 features; on the drifting-track sets it fuses a 9 m/s velocity error (below) |
+
+The out-of-LOST times are medians (straight leg after a 3 s blackout: up to 6.2 s with L0).
+
+The same on the drifting-track sets (filter told 1 px; `drift_lost.py`, median and range over the
+runs):
+
+| Set (runs) | LOST %, L0 | LOST %, L3 | rows LOST under L0 and DEGRADED under L3, % of all | their velocity error, m/s | velocity sigma in the L0 LOST rows, m/s | longest LOST, s, L0 / L3 |
+|---|---|---|---|---|---|---|
+| drift n: straight, constant speed (20) | 44 (19-64) | 15 (0-30) | 32 (5-51) | 9.4 (0.6-12.3) | 1.28 (1.02-1.53) | 172 / 63 |
+| drift n: loop, constant speed (20) | 37 (10-62) | 10 (0-29) | 28 (1-44) | 8.9 (2.7-11.9) | 1.23 (1.02-1.43) | 152 / 41 |
+| drift l: straight, constant speed (20) | 50 (27-69) | 25 (0-48) | 26 (6-52) | 9.4 (1.0-11.6) | 1.34 (1.06-1.61) | 206 / 104 |
+| drift l: loop, constant speed (20) | 39 (2-76) | 17 (0-51) | 21 (1-39) | 9.4 (1.5-11.7) | 1.29 (0.77-1.69) | 151 / 70 |
+| drift n: straight, speed +-20 % (8) | 4.5 (3.6-6.8) | 0 | 4.5 (3.6-6.8) | 2.3 (0.9-3.4) | 0.54 (0.50-0.62) | 7 / 0 |
+| drift n: straight, S-turns (8) | 3.8 (2.1-5.4) | 0 | 3.8 (2.1-5.4) | 0.7 (0.4-1.3) | 0.42 (0.40-0.44) | 5 / 0 |
+
+- On the constant-speed drift sets L3 turns 21-32 % of all rows (medians per set) from LOST into
+  DEGRADED, with a median velocity error of 9 m/s there, and DEGRADED is fused.
+- Plainly: L0 does not detect that error either. Those runs stay LOST only because leaving LOST
+  needs 5 good frames with the velocity sigma at or below 0.9 m/s, and the velocity sigma sits above
+  that (median 1.2-1.3 m/s in their LOST rows, below the 2 m/s LOST limit); 39-64 % of those LOST rows
+  pass every frame check. The velocity sigma is not a measure of the 9 m/s error (finding 2 of the
+  plan); that it keeps these runs out of fusion is a side effect of the exit rule.
 
 - Why LOST lasts so long on the 24 km set: the longest stretch of each run (28-34 s, between 1440 and
   1650 s) has 2-17 % good frames and never more than 4 in a row; the failing check is the feature
@@ -1565,22 +1616,125 @@ LOST exit (your item 3). Replayed offline from the logged checks with other exit
   0.6 m/s). It entered by the 2 s rule. With any rule the frames with 24 features stay DEGRADED, not
   GOOD (the 30 stays, your decision).
 - L3 removes all LOST from the synthetic white-noise sets and the long flights and changes nothing
-  for the blackouts and the gentle takeoff (62 % LOST, real failures). Not decided: your choice.
+  for the blackouts and the gentle takeoff (62 % LOST, real failures).
+- Your decision (2026-11-27): L0, unchanged. To be looked at again with real tracks (Gazebo,
+  recordings).
 
-Proposals for the other findings (none decided):
-| Finding | Option | Cost | Risk |
-|---|---|---|---|
-| frozen image and outliers not seen with few tracks | (a) keep: images give more tracks per update (median 14-15 on the renders, 10 on figure8, 7 on EuRoC, 3 on the straight leg; the check applies to 83-91 %, 58 %, 33 % and 0.3 % of the updates) | none | blind on sparse ground and on a third of EuRoC |
-| | (b) inlier ratio over the last 1 s of updates instead of per update | about 10 lines | slower to react (1 s) |
-| | (c) "every track rejected for N updates in a row" as a check (the trigger of piece 4) | about 10 lines | N is one more placeholder |
-| overconfident after a 0.5 s IMU gap | (a) DEGRADED for a fixed time after an IMU gap above the limit | a few lines | the time is a guess; it hides nothing from the FC (DEGRADED is fused) |
-| | (b) LOST for that time | a few lines | the FC loses us for every gap |
-| | (c) nothing until the FC IMU stream shows how often gaps happen (piece 3 adds gaps to the generator) | none | |
-| td step not followed | (a) nothing now: td fixed after the start, a step needs a restart (D2 of piece 4 resets td) | none | a real step would go unseen |
-| | (b) a td random walk in the filter | a filter change: your decision | td becomes noisier everywhere |
+Decisions on the other findings (2026-11-27):
+- Frozen image and outliers with few tracks (median tracks per update 14-15 on the renders, 10 on
+  figure8, 7 on EuRoC, 3 on the straight leg; the inlier check applies to 83-91 %, 58 %, 33 % and
+  0.3 % of the updates): "every track rejected for N updates in a row", built in piece 4 as the same
+  trigger as recovery D, with its false alarm rate on the sets without faults.
+- td step: nothing (above).
+- IMU gap: the cause is in the propagation, see "IMU gap noise" below.
+
+**IMU gap noise (switch `filter.imu_gap_noise`, off by default; 2026-11-27; implemented, not
+reviewed yet).** The cause:
+`propagate_one` integrates a gap as one interval from the samples on either side, with process noise
+density^2 x dt, as if the motion inside it had been measured. Over a gap the white-noise model lets
+the noise average out at the IMU rate, but only the two edge samples were measured, and their noise
+is held for the whole gap: for 0.5 s the velocity error from that is about 0.57 / sqrt(2) x 0.5 =
+0.2 m/s per axis on the synthetic IMU, where the model allows 0.04 x sqrt(0.5) = 0.03 m/s. With the
+switch on, an interval between real samples longer than `quality.imu_gap_max_ms` (20 ms) gets extra
+white noise of density sigma^2 x gap over each piece of the gap, so velocity and attitude variance
+grow by (sigma x gap)^2 across it (unit test: 1.02 of that).
+- The two values: `accel_sigma_m_s2` and `rate_sigma_rad_s`, how far the true mean acceleration and
+  angular rate over the gap can be from the two edge samples, per axis. S1 = 0.4 m/s^2 and 0.04
+  rad/s: the noise of one synthetic IMU sample (0.04 m/s^2/sqrt(Hz) and 0.004 rad/s/sqrt(Hz) at 200 Hz
+  give 0.57 and 0.057; measured about their 50 ms mean 0.54 and 0.054) divided by sqrt(2) for the mean
+  of two samples. The synthetic motion itself changes too slowly to add anything (jerk 0.3 m/s^3 and
+  angular acceleration 0.02 rad/s^2 on figure8, from the ground truth). S2 = twice S1. For our drone
+  both come from the FC stream with the motors running, plus the motion change over a gap (jerk x
+  gap / 2), once we have recordings.
+- Runs: the imu_gap sets of piece 2 (figure8, straight leg, normal render; 20 each; gap 0.1 and 0.5 s)
+  with the switch off, S1 and S2; and four sets without a gap (figure8, straight leg, render, EuRoC
+  20 starts) with the switch off and S1 (`gapnoise_2026-11-27`). Identity: switch off against the
+  piece 2 runs 120 of 120, and the sets without a gap with the switch off and on against the piece 2
+  monitor runs 160 of 160 (all columns but the timings).
+- Per second after a 0.5 s gap (second 0 = the gap start), median over the runs, velocity NEES and
+  share of velocity errors inside 3 sigma (position NEES changes little):
+
+| Set | Switch off, s 0-4 | S1, s 0-4 | S2, s 0-4 | No gap, s 0-4 |
+|---|---|---|---|---|
+| figure8 | 11.1 13.6 14.9 21.5 17.2; 80-87 % until s 3, 97 % s 4 | 1.9 2.7 2.7 2.7 2.6; 100 % | 1.2 2.5 2.6 2.9 2.7; 100 % | 2.4 2.4 3.0 2.3 2.5; 100 % |
+| straight | 9.9 14.2 15.5 12.1 10.3; 73-90 % until s 4 | 4.0 5.2 6.6 5.9 5.8; 100 % | 2.6 5.1 6.8 5.9 5.7; 100 % | 5.8 5.8 6.1 5.9 6.1; 100 % |
+| render | 24.6 3.8 2.9 8.8 10.3; 80 % in s 0 | 2.3 1.0 1.6 3.8 4.1; 100 % | 0.8 1.3 1.6 3.6 3.7; 100 % | 1.8 1.5 1.7 4.3 4.6; 100 % |
+
+- Whole runs, median (range) over 20: figure8 0.5 s gap ATE 0.234 % (0.107-0.536) off, 0.150 %
+  S1, 0.146 % S2, against 0.148 % without a gap (noise band 0.144-0.148); position NEES 5.46 off,
+  2.90 S1, 2.95 S2 (no gap 2.98, band 2.97-3.02). Render: ATE 0.228 off, 0.172 S1 and S2 (no gap
+  0.172, band 0.172); NEES 3.51, 3.02, 3.15 (band 3.02-3.11). Straight leg: unchanged (its 13 % ATE is
+  the scale bias). 0.1 s gaps: no change with any setting, all inside the bands.
+- So S1 brings the seconds after a 0.5 s gap back to the values without a gap, and the accuracy too;
+  S2 is cautious in the gap second (velocity NEES 0.8-2.6 against 1.8-5.8 without a gap) and the same
+  afterwards. This is added process noise across gaps, so it is your decision; not enabled.
 
 - Not checked: faults on EuRoC or the low-contrast render; more than one fault at a time; real or
   SITL data.
+
+**Piece 3: the FC IMU path (implemented 2026-11-27, not reviewed yet).** Two items, reported separately.
+
+*3a. Accel delay compensation* (code that real data needs). `shift_accel()` in
+`imu_propagation.h/.cpp`: every IMU sample gets the accel of the stream interpolated at
+t + (`accel_delay_ms` - `gyro_delay_ms`), so accel and gyro describe the same moment; the last
+samples, with nothing that late to take from, are dropped (1-2 at 6 ms). vio_replay applies it once
+after loading, before the faults, the filter, the tracker and the monitor read the IMU, and prints
+the shift. It applies only to sessions whose `imu0/sensor.yaml` says `fc_filtered: true` (our FC
+stream; a new `Session::imu_fc_filtered`), with `imu.accel_delay_compensation: true` (new key, on).
+Raw IMU data (EuRoC, the generator without `--fc-imu`) is not touched.
+- Checked: unit test (a 2 Hz signal on gyro and accel, 7 and 13 ms late, stamps jittered by up to
+  2.5 ms: largest accel - gyro difference 0.07 before, 0.0009 after). Replays print the shift (6.0 ms,
+  33.0 ms in the test below). With the final build the raw sessions give the same output as the
+  piece 2 monitor runs: figure8, both straight legs, the render and EuRoC, 100 of 100.
+- Its effect could not be shown on our synthetic data, not even with the accel 33 ms behind the gyro
+  (figure8, 20 seeds, `--fc-accel-delay 40`, the config told 40): ATE 0.149 % with the compensation,
+  0.146 % without, position NEES 2.59 / 2.85, inside the run-to-run spread. The error it removes is
+  about jerk x lag, and the synthetic motion is smooth (jerk 0.3 m/s^3 on figure8: 0.01 m/s^2 at
+  33 ms, far below the IMU noise). On our drone the jerk is not measured yet; punch-outs and flips of
+  tens of m/s^3 would make it 0.1-0.5 m/s^2 at 6 ms. To be checked on our recordings, or with a more
+  aggressive generated scenario (not built).
+- Not changed: `sim/make_session.py` does not mark SITL sessions as FC-filtered. SITL runs the same
+  INS low-pass filters (no notches), so its accel also lags its gyro (by about 8 ms: 20 Hz against
+  80 Hz); whether to mark them, with SITL's own delays in `config/replay_sim.yaml`, is open.
+
+*3b. "FC IMU" degradation in the generator* (`tools/gen_synthetic.py --fc-imu`). The IMU signal with
+the usual noise densities and biases is made at 1 kHz, delayed and first-order low-pass filtered per
+sensor (80 Hz gyro, 20 Hz accel, as INS_GYRO_FILTER and INS_ACCEL_FILTER) so that the total delay at
+low frequencies is 7 ms (gyro) and 13 ms (accel), sampled at 200 Hz, stamped up to 2.5 ms late
+(uniform: sent later in the FC loop), with on average 1 gap per minute of 20-60 ms (a guess for USB).
+Own random stream: the world, features, ground truth and baro are those of the raw session with the
+same seed. `sensor.yaml` says `fc_filtered: true` and lists the settings and the gaps. Options:
+`--fc-gyro-delay`, `--fc-accel-delay`, `--fc-gyro-lpf`, `--fc-accel-lpf`, `--fc-jitter`, `--fc-gaps`,
+`--fc-gap-ms`.
+- Checked: the delays against the clean signal (no noise, no jitter), fitted: 7.0 and 13.0 ms (the
+  first version gave 7.8 / 13.8 with jitter, 0.46 ms short: the discrete low-pass has r/(1-r) dt of
+  delay, not 1/(2 pi f); fixed). Without `--fc-imu` the generator writes the same files byte for byte
+  as before (figure8 seed 1; only `session.yaml` lists the new settings).
+- Runs (`fcimu_2026-11-27`, 20 seeds each, same seeds as the raw sets; filter told the raw noise):
+
+| Set | IMU | Compensation | ATE % | NEES pos | NEES att | td at the end, ms | frames failing the IMU gap check |
+|---|---|---|---|---|---|---|---|
+| figure8 | raw | - | 0.148 (0.104-0.298) | 2.98 (1.67-5.61) | 2.58 (1.74-4.13) | 0.07 (-6.7-10.4) | 0 |
+| figure8 | FC, delays and low-pass | off / on | 0.150 / 0.148 | 2.59 / 2.71 | 2.79 / 2.78 | 0.50 / 0.39 | 0 |
+| figure8 | FC, + jitter and gaps | off / on | 0.165 / 0.156 (0.08-0.35) | 3.37 / 3.27 (1.5-6.0) | 3.19 / 3.17 | -1.5 / -1.5 | 0.44 % |
+| straight, S-turns | raw | - | 0.991 (0.303-1.862) | 6.09 (1.10-19.87) | 2.48 | 2.66 (-6.5-10.4) | 0 |
+| straight, S-turns | FC, delays and low-pass | off / on | 0.948 / 0.930 | 5.73 / 5.69 | 2.65 / 2.62 | 1.8 / 1.8 | 0 |
+| straight, S-turns | FC, + jitter and gaps | off / on | 0.876 / 0.892 | 5.33 / 4.93 | 2.90 / 2.92 | 0.3 / 0.3 | 0.33 % |
+
+- Every difference is inside the run-to-run spread, and on figure8 the ATE with the compensation is
+  inside the noise band of the raw set (0.144-0.148). The FC filtering lowers the noise the filter
+  sees (it is told the raw densities), the jitter and gaps raise NEES a little (figure8 3.3 against
+  2.6-2.7).
+- The monitor saw every generated gap longer than 20 ms (155 of 155; 2 per run on figure8, 6 on the
+  straight leg).
+- td: in these sessions the IMU is 7 ms (8.25 ms with the mean jitter) late against the camera and the
+  ground truth, but the online td ends near 0 (median -1.5 to 1.8 ms) with a spread of about +-8 ms,
+  the same as on the raw sessions where the true td is 0. So on this smooth synthetic motion td is not
+  observable enough to find a 7-8 ms offset (review problem 3, online td). On our drone td must
+  absorb the gyro delay and the transport, so its start value from Kalibr or the gyro
+  cross-correlation (CALIBRATION.md step 3) matters.
+- Not checked: SITL; more dynamic motion; the RPM-dependent gyro delay (notches); the gap noise switch
+  together with the FC gaps (20-60 ms gaps would get it).
 
 Open after the review fixes, the moving origin, part a, the EuRoC liftoff check and stage 4:
 
@@ -1603,8 +1757,8 @@ Open after the review fixes, the moving origin, part a, the EuRoC liftoff check 
    flights without accelerations nothing pulls it back; also on loops at constant speed. Midpoint
    linearization (above, switch off by default) removes most of it on synthetic data; still
    overconfident along the track; the keep-gate rule (in the repo) removed the EuRoC divergence of
-   the first build; untested on straight legs with real tracks. Off by default; waiting for your
-   decision.
+   the first build; untested on straight legs with real tracks. Off by default; decided (2026-11-26):
+   it stays off until there is real data.
 6. EuRoC liftoff: B and C implemented (above); 2 of 121 starts still above 1 m, the missing
    recovery (D) goes to step 4. The landed-flag rate (2 or 10 Hz) and the real vibration on our
    drone wait for our recordings. C is off by default: with a ground-truth flag it makes the EuRoC
@@ -1667,7 +1821,8 @@ Until point A nothing on the Pi is needed. Point B is the one to prepare camera,
 
 Status: proposal, 2026-11-25. Part a (drift-aware feature noise, 13.4) is implemented since
 2026-11-26 behind a switch that is off by default (`filter.track_drift.enabled`); results in 13.11.
-Parts b and c are on hold (2026-11-26); the LOST thresholds and sigma_z are not decided. No config
+Parts b and c are on hold (2026-11-26); sigma_z is not decided; the LOST thresholds on the position
+sigma were dropped (2026-11-26, see "Step 4 plan" in section 11). No config
 default changed. Your decision (2026-11-25): the covariance must be dynamic, growing and shrinking with the
 real conditions. A single fixed output scale factor (the earlier proposal in section 11) is dropped.
 

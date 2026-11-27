@@ -23,10 +23,10 @@ Nothing has been copied yet.
 | Library | License | Notes |
 |---|---|---|
 | Eigen | MPL-2.0 | Header-only |
-| OpenCV | Apache-2.0 | core, imgproc, video (KLT) in the library; imgcodecs (PNG) in `vio_track`; calib3d only in the camera model test |
-| libcamera | LGPL-2.1 | Linked dynamically |
-| MAVLink c_library_v2 | MIT for the generated headers | The generator is LGPL-3.0, but the mavlink repo grants an explicit MIT exception for generated code |
+| OpenCV | Apache-2.0 | core, imgproc, video (KLT) in the library; imgcodecs (PNG) in `vio_replay` and `vio_track`; calib3d only in the camera model test |
 | yaml-cpp | MIT | Config parsing |
+| libcamera | LGPL-2.1 | Planned (camera capture, not written yet): linked dynamically |
+| MAVLink c_library_v2 | MIT for the generated headers | Planned (MAVLink I/O, not written yet). The generator is LGPL-3.0, but the mavlink repo grants an explicit MIT exception for generated code |
 
 ## Simulation tools (run beside the repo, not copied into it)
 

@@ -64,14 +64,22 @@ Fault parse_fault(const std::string& spec) {
     return f;
 }
 
+bool fault_active(const Fault& f, Timestamp t, Timestamp t_ref) {
+    const bool started = t >= at(t_ref, f.t_s);
+    return f.kind == Fault::TD_STEP ? started : started && t < at(t_ref, f.t_s + f.dur_s);
+}
+
 unsigned active_faults(const std::vector<Fault>& faults, Timestamp t, Timestamp t_ref) {
     unsigned bits = 0;
-    for (const auto& f : faults) {
-        const bool started = t >= at(t_ref, f.t_s);
-        const bool on = f.kind == Fault::TD_STEP ? started : started && t < at(t_ref, f.t_s + f.dur_s);
-        if (on) bits |= 1u << f.kind;
-    }
+    for (const auto& f : faults)
+        if (fault_active(f, t, t_ref)) bits |= 1u << f.kind;
     return bits;
+}
+
+void apply_outliers(const std::vector<Fault>& faults, Timestamp t, Timestamp t_ref,
+                    std::vector<FeatureObs>& features, std::mt19937& rng) {
+    for (const auto& f : faults)
+        if (f.kind == Fault::OUTLIERS && fault_active(f, t, t_ref)) move_outliers(features, f.share, f.px, rng);
 }
 
 void apply_session_faults(Session& s, const std::vector<Fault>& faults, Timestamp t_ref) {

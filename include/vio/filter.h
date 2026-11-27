@@ -86,6 +86,16 @@ struct FilterConfig {
     // Zero-velocity updates while the FC says landed, also with the motors running (vibration).
     bool zupt_landed = false;  // off until our own takeoff recordings (DESIGN.md section 11)
     double zupt_landed_accel_max = 0.3;  // m/s^2: | |mean specific force| - g | on the ground
+    // IMU gaps (filter.imu_gap_noise, off by default; DESIGN.md section 11, "Piece 2"). Across a gap
+    // the IMU is integrated from the samples on either side, as if they had measured the motion
+    // inside it. With the switch on, an interval between real samples longer than gap_min_s gets extra
+    // process noise for the unmeasured part: the true mean acceleration and angular rate over the gap
+    // differ from those samples by gap_accel_sigma and gap_rate_sigma (1 sigma per axis), held for the
+    // whole gap, so velocity and attitude get sigma * gap length.
+    bool gap_noise = false;
+    double gap_min_s = 0.02;          // quality.imu_gap_max_ms
+    double gap_accel_sigma = 0.4;     // m/s^2
+    double gap_rate_sigma = 0.04;     // rad/s
 };
 
 // Decides "still" from the IMU alone: small spread of accel and gyro over a sliding window.
@@ -209,7 +219,8 @@ public:
     void restore(const Filter& saved);
 
 private:
-    void propagate_one(const ImuSample& s);
+    // gap_s: the interval between the real IMU samples around this step (0 if not known).
+    void propagate_one(const ImuSample& s, double gap_s);
     void priors_to_invariant();
     void apply_propagation();
     void correct(const Eigen::VectorXd& dx);
@@ -222,6 +233,7 @@ private:
     bool initialized_ = false;
     bool have_last_ = false;
     ImuSample last_;
+    Timestamp last_real_t_ = 0;  // time of the last real IMU sample (last_ can be interpolated)
     double td_ = 0, baro_bias_ = 0;
     bool baro_seen_ = false, have_ground_ = false;
     double ground_height_ = 0;     // up . world position at a start from rest

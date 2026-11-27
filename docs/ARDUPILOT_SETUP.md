@@ -87,7 +87,7 @@ Decoded from the 4.6.3 source (`libraries/Filter/HarmonicNotchFilter.cpp`,
   (accel) (`AP_InertialSensor_Invensensev3.cpp`).
 
 Group delay in the band that matters for VIO (0.5-5 Hz), computed from the exact filter
-coefficient formulas of the 4.6.3 code (script in the Stage 1 tools):
+coefficient formulas of the 4.6.3 code (the script is not in the repo):
 
 | Stage | Gyro | Accel |
 |---|---|---|
