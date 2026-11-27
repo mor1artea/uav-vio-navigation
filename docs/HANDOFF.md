@@ -59,7 +59,24 @@ reviewer:
    (read on the web, nothing installed or run); fixed: SITL noise parameters, `sim/vio-iris.parm`
    instead of `gazebo-iris.parm`, route `straight`, `sim/replay.sh <session> off|on`,
    `config/midpoint_on.yaml`, setup packages; `sim/README.md` rewritten as step by step instructions.
-   Reported, waiting. Next: C (step 4 plan).
+   Accepted with the tee / buffering fix (done). C: step 4 plan written in DESIGN.md section 11,
+   "Step 4 plan" (proposal, nothing implemented), revised after your review: position sigma drives
+   neither DEGRADED nor LOST (states from the frame signals and the velocity sigma; C_filter sent
+   unchanged, the EKF caps posErr at 10 m); the straight-leg speed bias is a known blind spot of the
+   monitor (options E1-E5); recovery D3 and D2 tested, D1 only after asking you, G1 with a
+   covariance test, no G2; time-based growth in DEGRADED dropped; the accel delay compensation is its
+   own item (3a). Sections 7, 13.6 and 13.10 updated to match. Approved with changes (E1 log
+   only, E3 not now, E5 flight rule in ARDUPILOT_SETUP.md section 8, limits 0.9 / 2 m/s, K = 5).
+12. Step 4 piece 1, quality monitor (2026-11-26): `quality.h/.cpp`, `test_quality`, 14 new columns
+   at the end of the vio_replay rows (`quality.enabled`, on by default; off gives the old file).
+   332 replays: old columns identical in all. Results and the proposed score formula in DESIGN.md
+   section 11, "Piece 1". Accepted (2026-11-27) with report fixes: all sets, DEGRADED score floor
+   from `output.viso_qual_min` (only LOST is not fused), EuRoC DEGRADED is a false alarm.
+13. Step 4 piece 2, fault injection (2026-11-27): `inject.h/.cpp`, `test_inject`, `vio_replay
+   --inject`. 480 fault replays and 641 monitor replays (old columns identical in all). Results, the
+   LOST exit alternatives L0-L3 and the open findings (frozen and outliers with few tracks, overconfidence
+   after a 0.5 s IMU gap, td step not followed) in DESIGN.md section 11, "Piece 2". Waiting for your
+   decisions and OK before piece 3.
 
 Your standing decisions: no constant output scale factor, the covariance becomes dynamic step by
 step (parts b and c on hold); update stride 6 and age cap 72 provisional; td online with the 30 ms

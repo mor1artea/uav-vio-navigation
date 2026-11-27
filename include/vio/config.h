@@ -5,6 +5,7 @@
 #include "vio/filter.h"
 #include "vio/frontend.h"
 #include "vio/msckf.h"
+#include "vio/quality.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -24,5 +25,8 @@ MsckfConfig msckf_config(const YAML::Node& cfg);
 
 // Tracker and sky mask settings (sections tracker: and sky_mask:).
 TrackerConfig tracker_config(const YAML::Node& cfg);
+
+// Quality monitor settings (sections quality:, output: and tracker.grid).
+QualityConfig quality_config(const YAML::Node& cfg);
 
 }  // namespace vio

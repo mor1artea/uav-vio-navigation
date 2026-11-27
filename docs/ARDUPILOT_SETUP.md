@@ -366,6 +366,20 @@ In flight (kind 3, once Loiter exists):
 
 The module never sends source set or mode commands, so it cannot fight the pilot.
 
+### Flight rule: avoid long legs without turns (from the synthetic tests, 2026-11-26)
+
+On long straight legs, and on circles flown at constant speed and bank, our speed estimate drifts
+(on synthetic 5 km flights the speed ended several m/s too high), and the module does not notice:
+its uncertainty and its checks look normal (DESIGN.md section 11, "Step 4 plan", known blind spot).
+Speed changes alone help only a little. Turning in and out often helps most.
+
+- On legs longer than a few hundred metres, weave: change heading by some tens of degrees every
+  10-20 s, left and right, rather than holding one heading.
+- Do not fly long circles at one constant bank; vary the turn.
+- This reduces the error, it does not remove it. A long flight still ends with a larger position
+  error than a short one, and on our drone the size of the effect is not known until the flights
+  with the GNSS logger.
+
 ## 9. Failsafes
 
 ### Your current values, decoded from the 4.6.3 source

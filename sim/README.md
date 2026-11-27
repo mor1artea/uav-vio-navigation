@@ -56,13 +56,14 @@ parameters every time).
 
 ```
 mkdir -p ~/datasets/sim
-sim/fly_record.py ~/datasets/sim/first --route straight --leg 200 2>&1 | tee ~/datasets/sim/first.log
+sim/fly_record.py ~/datasets/sim/first --route straight --leg 200 2>&1 | tee -i ~/datasets/sim/first.log
 ```
 
 You should see, in this order: `waiting for SITL`; `arming (waits for the EKF and the simulated GPS)`
 (up to a minute or two); `takeoff`; `turning (clock alignment)`; `flying to north 200 m, east 0 m`;
 `landing`; `recorded N images, 0 dropped by this script`; then the checks, every line starting with
-`ok`. Lines starting with `FC:` are messages from SITL, for information.
+`ok`. Lines starting with `FC:` are messages from SITL, for information. The lines appear as they
+happen (the script writes line by line; `tee -i` keeps the log complete if you stop it with Ctrl-C).
 
 ## Step 5: check the camera (once, on the first flight)
 
@@ -82,14 +83,21 @@ A straight 2.5 km leg north at constant speed, 12 m/s at 40 m, once without and 
 from the west, across the track, with gusts). Restart terminal 1 (step 3) before each.
 
 ```
-sim/fly_record.py ~/datasets/sim/straight_calm --route straight --leg 2500 2>&1 | tee ~/datasets/sim/straight_calm.log
+sim/fly_record.py ~/datasets/sim/straight_calm --route straight --leg 2500 2>&1 | tee -i ~/datasets/sim/straight_calm.log
 sim/fly_record.py ~/datasets/sim/straight_wind --route straight --leg 2500 --wind 4 --wind-from 270 --gust 1.5 \
-    2>&1 | tee ~/datasets/sim/straight_wind.log
+    2>&1 | tee -i ~/datasets/sim/straight_wind.log
 ```
 
 Each takes about 5 min of simulated time (longer if the simulation runs slower than real time) and
 ends like step 4. For more flights of the same kind add `--seed 2`, `--seed 3` (other gusts) and a new
 folder name; one flight is one number.
+
+These 2.5 km legs cannot be compared directly with the 5 km synthetic numbers of DESIGN.md section 11
+and DATASETS.md section 7: the error on a straight leg grows faster than the distance (so a 2.5 km
+number is not half of a 5 km one), the start is different (takeoff and turns here, a start in flight
+there), the autopilot's corrections on the simulated GPS add small accelerations, and the camera,
+the ground texture and the noise are Gazebo's. Compare the midpoint off and on on the same flight,
+and flights with each other.
 
 ## Step 7: replay with our filter, midpoint off and on
 

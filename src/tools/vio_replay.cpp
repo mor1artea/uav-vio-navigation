@@ -12,13 +12,25 @@
 // "timestamp [ns],p_x,p_y,p_z,q_w,q_x,q_y,q_z", so tools/metrics.py reads every mode. The vio mode
 // adds velocity, biases, td, baro bias, the pose covariance (upper triangle of the 6x6 block in
 // the order p_x p_y p_z th_x th_y th_z, attitude error in the world frame), the velocity
-// covariance, and per-frame numbers; the header names every column.
+// covariance, and per-frame numbers; the header names every column. With quality.enabled the
+// quality monitor (vio/quality.h) adds its columns at the end; the columns before them do not change:
+//   q_state 0 GOOD / 1 DEGRADED / 2 LOST, q_score (-1 in LOST), q_fails (QualityFail bits: 1 features,
+//   2 grid cells, 4 forward-backward rate, 8 inlier ratio, 16 joint gate, 32 IMU rate, 64 IMU gap,
+//   128 td change, 256 speed), q_sigma_v (m/s, the velocity covariance in its worst direction), q_features,
+//   q_cells, q_pos_valid and q_vel_valid (what would be sent), q_poserr463 (posErr of ArduPilot
+//   4.6.3 from our position variances, before its clamps), e1_flag, e1_a_lat (m/s^2, NaN below the
+//   speed limit), e1_range (NaN until the window is full), img_brightness, img_blur (NaN without
+//   images).
+// With --inject (vio/inject.h) one more column at the very end: fault, the bits (1 << kind) of the
+// faults active at the frame's camera time (1 blackout, 2 frozen, 4 outliers, 8 imu_gap, 16 td_step).
 
 #include "vio/camera_model.h"
 #include "vio/config.h"
 #include "vio/filter.h"
 #include "vio/frontend.h"
+#include "vio/inject.h"
 #include "vio/msckf.h"
+#include "vio/quality.h"
 
 #include <opencv2/core/utility.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -30,6 +42,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <random>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -42,7 +55,9 @@ void usage() {
                  "                  [--start seconds] [--duration seconds] [--features features.csv]\n"
                  "                  [--config file] ...  (default config/vio.yaml; later files override)\n"
                  "  --start     skip this many seconds from the first IMU sample (e.g. hand-carried part)\n"
-                 "  --features  read feature tracks from this file instead of the session's images\n";
+                 "  --features  read feature tracks from this file instead of the session's images\n"
+                 "  --inject    a fault, repeatable (vio/inject.h): blackout:T:D, frozen:T:D,\n"
+                 "              outliers:T:D:SHARE:PX, imu_gap:T:D, td_step:T:MS (T in s from the first IMU sample)\n";
 }
 
 void write_row(std::ofstream& out, const vio::State& s) {
@@ -53,7 +68,7 @@ void write_row(std::ofstream& out, const vio::State& s) {
     out << buf;
 }
 
-std::string vio_header() {
+std::string vio_header(bool quality, bool fault_column) {
     std::string h = "#timestamp [ns],p_x,p_y,p_z,q_w,q_x,q_y,q_z,v_x,v_y,v_z,bg_x,bg_y,bg_z,"
                     "ba_x,ba_y,ba_z,td_ms,td_sigma_ms,baro_bias";
     for (int i = 0; i < 6; ++i)
@@ -61,7 +76,11 @@ std::string vio_header() {
     for (int i = 0; i < 3; ++i)
         for (int j = i; j < 3; ++j) h += ",Cvel_" + std::to_string(i) + std::to_string(j);
     return h + ",static,n_msckf,n_landmarks,n_rejected,n_no_geometry,n_landmark_rejected,update_rejected,"
-               "ms_track,ms_propagate,ms_update\n";
+               "ms_track,ms_propagate,ms_update" +
+           (quality ? std::string(",q_state,q_score,q_fails,q_sigma_v,q_features,q_cells,q_pos_valid,"
+                                  "q_vel_valid,q_poserr463,e1_flag,e1_a_lat,e1_range,img_brightness,img_blur")
+                    : std::string()) +
+           (fault_column ? ",fault" : "") + "\n";
 }
 
 struct FrameNumbers {
@@ -71,7 +90,7 @@ struct FrameNumbers {
     double ms_track = 0, ms_propagate = 0, ms_update = 0;
 };
 
-// C: covariance of [p, theta, v] as ordinary errors (Filter::ordinary_covariance).
+// C: covariance of [p, theta, v] as ordinary errors (Filter::ordinary_covariance). No line end.
 void write_vio_row(std::ofstream& out, const vio::State& s, double td, double td_sigma,
                    double baro_bias, const Eigen::Matrix<double, 9, 9>& C, const FrameNumbers& k) {
     char buf[256];
@@ -92,9 +111,27 @@ void write_vio_row(std::ofstream& out, const vio::State& s, double td, double td
             std::snprintf(buf, sizeof(buf), ",%.6e", C(i, j));
             out << buf;
         }
-    std::snprintf(buf, sizeof(buf), ",%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f\n", k.zupt, k.n_msckf,
+    std::snprintf(buf, sizeof(buf), ",%d,%d,%d,%d,%d,%d,%d,%.3f,%.3f,%.3f", k.zupt, k.n_msckf,
                   k.n_landmarks, k.n_rejected, k.n_no_geometry, k.n_landmark_rejected,
                   k.update_rejected ? 1 : 0, k.ms_track, k.ms_propagate, k.ms_update);
+    out << buf;
+}
+
+struct QualityNumbers {
+    vio::QualityResult q;
+    vio::OutputDecision out;
+    int features = 0, cells = 0;
+    double poserr = 0;
+    vio::ExcitationMonitor::Result e1;
+    double brightness = NAN, blur = NAN;
+};
+
+void write_quality(std::ofstream& out, const QualityNumbers& n) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), ",%d,%d,%u,%.4f,%d,%d,%d,%d,%.4f,%d,%.4f,%.4f,%.2f,%.2f",
+                  static_cast<int>(n.q.state), n.q.score, n.q.fails, n.q.sigma_v, n.features, n.cells,
+                  n.out.position_valid ? 1 : 0, n.out.velocity_valid ? 1 : 0, n.poserr, n.e1.flag ? 1 : 0,
+                  n.e1.a_lat, n.e1.range, n.brightness, n.blur);
     out << buf;
 }
 
@@ -135,6 +172,7 @@ int main(int argc, char** argv) {
     std::string out_path;  // required: no default file in the current folder
     std::string features_file;
     std::vector<std::string> config_files;
+    std::vector<vio::Fault> faults;
     double start_offset = 0;  // seconds after the first IMU sample
     double max_duration = 0;  // 0 = whole session
     for (int i = 2; i < argc; ++i) {
@@ -147,6 +185,13 @@ int main(int argc, char** argv) {
             config_files.push_back(argv[++i]);
         } else if (a == "--features" && i + 1 < argc) {
             features_file = argv[++i];
+        } else if (a == "--inject" && i + 1 < argc) {
+            try {
+                faults.push_back(vio::parse_fault(argv[++i]));
+            } catch (const std::exception& e) {
+                std::cerr << "error: " << e.what() << "\n";
+                return 1;
+            }
         } else if (a == "--start" && i + 1 < argc) {
             start_offset = std::stod(argv[++i]);
         } else if (a == "--duration" && i + 1 < argc) {
@@ -169,6 +214,8 @@ int main(int argc, char** argv) {
     double image_still_px = 1.0;
     double max_flag_age_s = 0.1;
     int update_stride = 1;
+    bool quality_on = true;
+    vio::QualityConfig quality_cfg;
     double rate_window_s = 0.03;
     try {
         session = vio::load_session(session_path, features_file);
@@ -176,6 +223,8 @@ int main(int argc, char** argv) {
         filter_cfg = vio::filter_config(cfg, session.imu_noise);
         msckf_cfg = vio::msckf_config(cfg);
         tracker_cfg = vio::tracker_config(cfg);
+        quality_cfg = vio::quality_config(cfg);
+        if (cfg["quality"] && cfg["quality"]["enabled"]) quality_on = cfg["quality"]["enabled"].as<bool>();
         if (cfg["filter"]["update_stride"]) update_stride = std::max(1, cfg["filter"]["update_stride"].as<int>());
         if (cfg["imu"]["td_rate_window_ms"]) rate_window_s = cfg["imu"]["td_rate_window_ms"].as<double>() * 1e-3;
         if (cfg["filter"]["zupt"]["image_motion_max_px"])
@@ -186,7 +235,18 @@ int main(int argc, char** argv) {
         std::cerr << "error: " << e.what() << "\n";
         return 1;
     }
+    // Faults are timed from the first IMU sample of the session as loaded (before any gap is cut).
+    const vio::Timestamp t_fault_ref = session.imu.empty() ? 0 : session.imu.front().t;
+    vio::apply_session_faults(session, faults, t_fault_ref);
     print_summary(session);
+    for (const auto& fl : faults) {
+        const char* names[] = {"blackout", "frozen", "outliers", "imu_gap", "td_step"};
+        char extra[96] = "";
+        if (fl.kind == vio::Fault::TD_STEP) std::snprintf(extra, sizeof(extra), ", td step %.1f ms", fl.td_ms);
+        if (fl.kind == vio::Fault::OUTLIERS)
+            std::snprintf(extra, sizeof(extra), ", share %.2f, %.1f px", fl.share, fl.px);
+        std::printf("fault        %s at %.2f s for %.2f s%s\n", names[fl.kind], fl.t_s, fl.dur_s, extra);
+    }
     if (session.ground_truth.empty()) {
         std::cerr << "error: replay needs ground truth (start state, yaw reference or output)\n";
         return 1;
@@ -224,7 +284,7 @@ int main(int argc, char** argv) {
         std::cerr << "error: cannot write " << out_path << "\n";
         return 1;
     }
-    out << (mode == "vio" ? vio_header() : "#timestamp [ns],p_x,p_y,p_z,q_w,q_x,q_y,q_z\n");
+    out << (mode == "vio" ? vio_header(quality_on, !faults.empty()) : "#timestamp [ns],p_x,p_y,p_z,q_w,q_x,q_y,q_z\n");
 
     vio::ImuPropagator prop(session.gravity_world);
     prop.reset(start);
@@ -245,6 +305,19 @@ int main(int argc, char** argv) {
     double ms_track_sum = 0;
 
     vio::CameraFrame prev_frame;
+    // Quality monitor (passive): signals since the last update frame.
+    vio::QualityMonitor monitor(quality_cfg);
+    vio::ExcitationMonitor excitation(quality_cfg);
+    vio::Timestamp t_prev_update = -1;
+    double td_prev_update = 0;
+    double frame_tracked_ratio = -1, frame_brightness = NAN, frame_blur = NAN;
+    size_t n_state[3] = {0, 0, 0}, n_e1 = 0, n_e1_window = 0;
+    // Fault injection: the frame or features held by a frozen fault, the outlier generator.
+    cv::Mat frozen_image;
+    std::vector<vio::FeatureObs> frozen_features;
+    bool frozen_held = false;
+    std::mt19937 outlier_rng(12345);
+    unsigned frame_faults = 0;
     size_t n_shifts = 0;
     size_t n_late = 0;
     long n_baro_seen = 0;  // baro samples up to here are used or skipped
@@ -255,11 +328,32 @@ int main(int argc, char** argv) {
         filter.propagate_to(t_imu, next);
         FrameNumbers k;
         vio::CameraFrame f = frame;
+        frame_faults = vio::active_faults(faults, frame.t, t_fault_ref);
+        const bool blackout = frame_faults & (1u << vio::Fault::BLACKOUT);
+        const bool frozen = frame_faults & (1u << vio::Fault::FROZEN);
+        if (!frozen) {
+            frozen_held = false;
+            frozen_image.release();
+        }
+        if (!run_tracker) {
+            if (frozen) {
+                if (!frozen_held) frozen_features = f.features;
+                f.features = frozen_features;
+                frozen_held = true;
+            }
+            if (blackout) f.features.clear();
+        }
         if (run_tracker) {
             const auto t0 = std::chrono::steady_clock::now();
             vio::FrameInput in;
             in.t = f.t;
             in.image = cv::imread(f.image_path, cv::IMREAD_GRAYSCALE);
+            if (frozen) {
+                if (!frozen_held) frozen_image = in.image.clone();
+                in.image = frozen_image.clone();
+                frozen_held = true;
+            }
+            if (blackout) in.image.setTo(0);
             if (t_prev_imu >= 0)
                 in.R_cprev_ccur = R_bc.transpose() *
                                   vio::integrate_gyro(session.imu, t_prev_imu, t_imu, filter.state().bg) *
@@ -268,13 +362,19 @@ int main(int argc, char** argv) {
             in.R_world_cam = filter.state().q.toRotationMatrix() * R_bc;
             in.down_world = session.gravity_world.normalized();
             tracker.set_keep(msckf.landmark_ids(filter));
-            tracker.process(in);
+            const vio::FrameStats fs = tracker.process(in);
+            frame_tracked_ratio = fs.attempted > 0 ? static_cast<double>(fs.tracked) / fs.attempted : -1;
+            frame_brightness = fs.image.brightness;
+            frame_blur = fs.image.blur;
             f.features = tracker.features();
             k.ms_track = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0).count();
             ms_track_sum += k.ms_track;
             ++n_tracked;
         }
+        for (const auto& fl : faults)
+            if (fl.kind == vio::Fault::OUTLIERS && (frame_faults & (1u << vio::Fault::OUTLIERS)))
+                vio::move_outliers(f.features, fl.share, fl.px, outlier_rng);
         t_prev_imu = t_imu;
         // The visual update runs on every update_stride-th frame only (the tracker on all of them):
         // the same number of clones then spans a longer time, which gives slow flight and the
@@ -323,8 +423,47 @@ int main(int argc, char** argv) {
         n_no_geometry += ms.no_geometry;
         ms_sum += k.ms_propagate + k.ms_update;
         const double td_sigma = std::sqrt(filter.covariance()(vio::Filter::TD, vio::Filter::TD));
-        write_vio_row(out, filter.world_state(), filter.td(), td_sigma, filter.baro_bias(),
-                      filter.ordinary_covariance(), k);
+        const Eigen::Matrix<double, 9, 9> C = filter.ordinary_covariance();
+        write_vio_row(out, filter.world_state(), filter.td(), td_sigma, filter.baro_bias(), C, k);
+        if (quality_on) {
+            QualityNumbers qn;
+            const vio::ImuWindow iw = t_prev_update >= 0 ? vio::summarize_imu(session.imu, t_prev_update, t_imu)
+                                                         : vio::ImuWindow{};
+            const vio::State& s = filter.state();
+            vio::FrameSignals sig;
+            sig.t = t_imu;
+            sig.features = qn.features = static_cast<int>(f.features.size());
+            sig.cells = qn.cells = vio::occupied_cells(f.features, session.camera.width, session.camera.height,
+                                                       quality_cfg.grid_cols, quality_cfg.grid_rows);
+            sig.tracked_ratio = run_tracker ? frame_tracked_ratio : -1;
+            sig.msckf_used = ms.used;
+            sig.msckf_rejected = ms.rejected;
+            sig.joint_rejected = ms.update_rejected;
+            sig.imu_rate_hz = iw.rate_hz;
+            sig.imu_gap_ms = iw.max_gap_ms;
+            sig.td_change_ms = t_prev_update >= 0 ? (filter.td() - td_prev_update) * 1e3 : 0;
+            sig.speed = s.v.norm();
+            sig.C_vel = C.block<3, 3>(6, 6);
+            qn.q = monitor.update(sig);
+            qn.out = vio::decide_output(qn.q, monitor, C.block<3, 3>(0, 0), quality_cfg);
+            qn.poserr = vio::poserr_463(C.block<3, 3>(0, 0));
+            // E1: mean specific force since the last update frame, rotated with the attitude now.
+            const Eigen::Vector3d a_world = iw.n > 0 ? Eigen::Vector3d(s.q * (iw.mean_accel - s.ba) + session.gravity_world)
+                                                     : Eigen::Vector3d::Constant(NAN);
+            qn.e1 = excitation.add(t_imu, a_world, s.v, session.gravity_world.normalized());
+            if (run_tracker) {
+                qn.brightness = frame_brightness;
+                qn.blur = frame_blur;
+            }
+            write_quality(out, qn);
+            ++n_state[static_cast<int>(qn.q.state)];
+            n_e1 += qn.e1.flag;
+            n_e1_window += std::isfinite(qn.e1.range);
+            t_prev_update = t_imu;
+            td_prev_update = filter.td();
+        }
+        if (!faults.empty()) out << ',' << frame_faults;
+        out << '\n';
         ++n_out;
     };
 
@@ -395,6 +534,11 @@ int main(int argc, char** argv) {
                         n_tracked ? ms_track_sum / n_tracked : 0.0);
         std::printf("\n");
     }
+    if (mode == "vio" && quality_on && n_out > 0)
+        std::printf("quality      GOOD %.1f %%, DEGRADED %.1f %%, LOST %.1f %% of update frames; low "
+                    "excitation flag on %.1f %% (of %zu frames with a full window)\n",
+                    100.0 * n_state[0] / n_out, 100.0 * n_state[1] / n_out, 100.0 * n_state[2] / n_out,
+                    100.0 * n_e1 / std::max<size_t>(1, n_e1_window), n_e1_window);
     std::printf("output       %zu poses -> %s\n", n_out, out_path.c_str());
     return 0;
 }

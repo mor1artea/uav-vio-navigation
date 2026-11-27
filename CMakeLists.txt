@@ -27,6 +27,8 @@ add_library(vio_core
   src/filter.cpp
   src/config.cpp
   src/msckf.cpp
+  src/quality.cpp
+  src/inject.cpp
 )
 target_include_directories(vio_core PUBLIC include)
 target_link_libraries(vio_core PUBLIC Eigen3::Eigen yaml-cpp opencv_core opencv_imgproc opencv_video)
@@ -51,4 +53,10 @@ add_test(NAME frontend COMMAND test_frontend)
 add_executable(test_filter tests/test_filter.cpp)
 target_link_libraries(test_filter PRIVATE vio_core)
 add_test(NAME filter COMMAND test_filter)
+add_executable(test_quality tests/test_quality.cpp)
+target_link_libraries(test_quality PRIVATE vio_core)
+add_test(NAME quality COMMAND test_quality)
+add_executable(test_inject tests/test_inject.cpp)
+target_link_libraries(test_inject PRIVATE vio_core)
+add_test(NAME inject COMMAND test_inject)
 add_test(NAME metrics COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/test_metrics.py)

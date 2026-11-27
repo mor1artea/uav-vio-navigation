@@ -129,4 +129,29 @@ TrackerConfig tracker_config(const YAML::Node& y) {
     return c;
 }
 
+QualityConfig quality_config(const YAML::Node& c) {
+    QualityConfig q;
+    q.lost_after_bad_s = get(c, "quality.lost_after_bad_s", q.lost_after_bad_s);
+    q.min_features = get(c, "quality.min_tracks", q.min_features);
+    q.min_grid_cells = get(c, "quality.min_grid_cells", q.min_grid_cells);
+    q.min_tracked_ratio = get(c, "quality.min_tracked_ratio", q.min_tracked_ratio);
+    q.min_inlier_ratio = get(c, "quality.min_inlier_ratio", q.min_inlier_ratio);
+    q.min_tracks_for_ratio = get(c, "quality.min_tracks_for_ratio", q.min_tracks_for_ratio);
+    q.imu_rate_min_hz = get(c, "quality.imu_rate_min_hz", q.imu_rate_min_hz);
+    q.imu_gap_max_ms = get(c, "quality.imu_gap_max_ms", q.imu_gap_max_ms);
+    q.td_change_max_ms = get(c, "quality.td_change_max_ms", q.td_change_max_ms);
+    q.max_speed = get(c, "quality.max_speed_m_s", q.max_speed);
+    q.vel_sigma_degraded = get(c, "output.velocity_nan_sigma_factor", 3.0) * get(c, "output.viso_vel_m_nse", 0.3);
+    q.vel_sigma_lost = get(c, "quality.lost_velocity_sigma_m_s", q.vel_sigma_lost);
+    q.good_frames_to_recover = get(c, "quality.good_frames_to_recover", q.good_frames_to_recover);
+    q.score_floor = get(c, "output.viso_qual_min", q.score_floor);
+    q.excitation_window_s = get(c, "quality.excitation.window_s", q.excitation_window_s);
+    q.excitation_min_range = get(c, "quality.excitation.min_lateral_accel_range", q.excitation_min_range);
+    q.excitation_min_speed = get(c, "quality.excitation.min_speed_m_s", q.excitation_min_speed);
+    const TrackerConfig t = tracker_config(c);
+    q.grid_cols = t.grid_cols;
+    q.grid_rows = t.grid_rows;
+    return q;
+}
+
 }  // namespace vio

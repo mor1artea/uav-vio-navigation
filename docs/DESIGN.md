@@ -261,9 +261,13 @@ the hard part, and these are the costs:
 ## 7. Output, quality states and who controls what
 
 - How the covariance itself becomes dynamic, and the proposed thresholds between the states:
-  section 13 (proposal, 2026-11-25). It would replace the time-based inflation below.
+  section 13 (proposal, 2026-11-25). Changed by your decisions of 2026-11-26 (step 4 plan in
+  section 11): the states come from the frame signals and the velocity sigma, not the position
+  sigma; no time-based inflation; the long-gap restart below is not built for now (only the short-gap
+  rule, with a test that its covariance is honest).
 - GOOD: ODOMETRY with position, velocity, honest covariance, quality 50-100.
-- DEGRADED: covariance inflated with time and score, quality 1-49. Velocity is sent as NaN once its
+- DEGRADED: the filter's covariance as it is (the time-based inflation first planned here was dropped
+  on 2026-11-26), quality 1-49. Velocity is sent as NaN once its
   sigma is more than about 3x `VISO_VEL_M_NSE`, because ArduPilot ignores our velocity covariance
   and NaN is the only way to stop it fusing a bad velocity. In 4.6.3 the vertical velocity is always
   fused together with the horizontal one, so the vz sigma counts in that test too.
@@ -1245,6 +1249,339 @@ Pixel noise value: the data do not support lowering the 1 px while the drift is 
 part a is used, the white value should be the measured white part of our camera (0.2 px on the normal
 render, 1.0 px on the low-contrast one: it depends on the image), not one number for all.
 
+**Step 4 plan (approved 2026-11-26 with the changes below; piece 1 implemented, see "Piece 1" after
+the plan).** Quality
+module with GOOD / DEGRADED / LOST, fault injection, the accel delay compensation, "FC IMU"
+degradation, recovery when every track is rejected (option D). Kept small; offline only (replay), no
+MAVLink, nothing on the FC or the Pi.
+
+Decided (sections 7, 13.6, and your answers of 2026-11-26):
+- The three states and what each sends: GOOD position, velocity and the filter's covariance, quality
+  50-100; DEGRADED the same with quality 1-49; LOST NaN position and velocity, quality -1, the filter
+  keeps propagating.
+- Position sigma drives neither DEGRADED nor LOST. It grows with the distance flown by nature. In the
+  runs of the midpoint stage (switch off, median of seeds; from your review) the horizontal sigma
+  passes 3 m after 312 m on the straight leg, 362 m on the S-turn loop and 436 m on the 9 km flight,
+  and 93-97 % of the rows are above 3 m: a 3 m rule would make almost every km flight LOST. The
+  1.5 m and 3 m proposals of 13.6 are withdrawn.
+- DEGRADED and LOST come from the frame signals and the velocity sigma (below).
+- Output rules: the covariance sent is always finite and positive, otherwise the position is NaN
+  (LOST); velocity NaN once its sigma (with vz) exceeds 3 x `VISO_VEL_M_NSE` (0.9 m/s).
+- No time-based covariance growth in DEGRADED: `output.degraded_inflation_per_s` goes (the key is
+  removed from config/vio.yaml in piece 1).
+- No noise inflation or covariance scaling without your decision; parts b and c of section 13 on hold
+  (C_out = C_filter); midpoint off; C off; td online.
+- Recovery: D3 (baseline) and D2 are tested; D1 only if D2 fails, and only after asking you. G1 yes,
+  with a test that the covariance stays honest through the gap. No G2 for now.
+
+What we send as position covariance once it is large: C_filter as it is. No cap, no inflation, and no
+NaN because of its size. In 4.6.3 the FC turns it into posErr = cbrt(c0^2 + c6^2 + c11^2), with the
+`VISO_POS_M_NSE` floor and the EKF cap of 10 m (13.6). The cap is reached at a sigma of 4.3 m on all
+three axes, or 4.7 m horizontal with a small sigma_z; with the growth above that is some hundreds of
+metres into a flight (the distance per set goes into the piece 1 report). Beyond it the EKF uses 10 m
+whatever we send and keeps fusing our position (ARDUPILOT_SETUP.md section 3), so our true position
+error can be larger than the EKF assumes. What the EKF does then is on the SITL list below; nothing
+in this step works around it.
+
+States from the frame signals and the velocity sigma (piece 1; limits from `quality:` in
+config/vio.yaml, placeholders until SITL or real data, not tuned to synthetic results):
+- A frame is good when every check passes: tracked features and occupied grid cells above their
+  minimum, chi2 rejection share below its maximum, no joint-gate rejection, IMU rate and largest IMU
+  gap within their limits, td change within its limit, speed below `max_speed_m_s`.
+- DEGRADED: the current frame is not good, or the velocity sigma (with vz) is above 0.9 m/s, the
+  point where the velocity is sent as NaN.
+- LOST: no good frame for 2 s (`lost_after_bad_s`), or the velocity sigma above a second limit,
+  proposed 2 m/s (placeholder: above it the position is dead reckoning from a velocity known only to
+  some m/s).
+- Back to GOOD after K good frames in a row (K = 5 update frames proposed) with the velocity sigma
+  below 0.9 m/s.
+- Score from the frame checks and the velocity sigma only, not from the position sigma, so it agrees
+  with the state (GOOD 50-100, DEGRADED 1-49). The formula is still open: simple, documented, not
+  fitted. The score matters to the FC: with `VISO_QUAL_MIN` = 10 (planned, ARDUPILOT_SETUP.md) a
+  sample with quality below 10 is not fused at all.
+
+Known blind spot: the speed bias on straight legs and constant loops. The monitor cannot see it. On
+the straight leg at constant speed (midpoint stage runs, switch off, median of seeds; from your
+review) the true velocity error at the end is 6.5 m/s while the velocity sigma never exceeds
+0.72 m/s, below the 0.9 m/s NaN rule, and the chi2 rejections are 5.1 %, as on a good flight. Loop at
+constant speed: 5.8 m/s against at most 0.70 m/s. S-turns: 0.27 m/s against 0.34 m/s, but that holds
+for white pixel noise only. On drifting tracks (like the normal render: 0.2 px white, q 0.044, track
+age 72; 8 seeds, filter told 1 px, switch off; from your review) S-turns give a velocity error of
+0.52 m/s (median), above 1 m/s 18 % of the time; speed changes 3.46 m/s at the end with the velocity
+sigma at most 0.80 m/s, also a blind spot; constant speed 15.6 m/s at the end. The filter is
+confidently wrong there and every signal of the monitor looks normal. Which motion
+helps (ATE over 20 seeds, switch off, DATASETS.md section 7): S-turns 0.99 %, speed changes of
++-20 % without turns 6.4 %, constant speed 13 % on the straight leg; constant-speed loop 4.9 %. Turns
+in and out matter most, speed changes help only in part.
+
+Options for the blind spot (none decided; costs are code and test effort):
+| Option | What | Cost | Risk |
+|---|---|---|---|
+| E1. Low excitation signal | a flag when the acceleration across the direction of flight (gravity removed, from the IMU and the filter attitude) varies by less than X over the last N s, at speeds above 3 m/s; placeholders X = 1 m/s^2, N = 10 s, not fitted. On the synthetic sets it would fire on the straight leg, the constant loop (constant sideways acceleration) and the speed-change leg (none sideways), not on S-turns, figure8 or the renders | about 30 lines in the monitor, one unit test, the blind-spot runs below | normal cruise in AltHold may sit in this state for long stretches; X and N unknown until real data; it says "the speed may be wrong", not by how much |
+| E2. What E1 does when it fires | (a) logged and in the score only, state unchanged; (b) DEGRADED; (c) velocity NaN after N s; (d) quality below `VISO_QUAL_MIN`, so the FC drops the whole sample | none to one line each | (a) the FC never learns; (b) only a lower quality, which the FC uses only through `VISO_QUAL_MIN`; (c) the EKF loses our velocity on every straight leg but still fuses our position; (d) like LOST for the FC on every straight leg |
+| E3. Speed from image flow and baro height | over flat ground, speed = image flow (rotation removed with the gyro) x height above ground / focal length, compared with the filter's speed; a flag above a set ratio | medium, about 100 lines and its own tests | needs flat ground and a takeoff point at the same height as the ground below (the baro gives height above takeoff); baro drift; a second scale estimate beside the filter's |
+| E4. Midpoint linearization on | removes most of the bias (straight 13 % to 1.9 %) | none, it exists | not a monitor; decided off until real data |
+| E5. Flight rule | no long straight legs or circles at constant speed; weave or vary the heading; written down for the pilot | none | depends on the pilot; detects nothing |
+Not listed: growing the velocity sigma when E1 fires (noise inflation).
+
+Decided (2026-11-26): E1 yes, log only: the flag and the raw value it is computed from are written;
+it changes neither the state, the score nor the output. E3 not now. E4 stays off. E5: the flight rule
+is in ARDUPILOT_SETUP.md section 8; it reduces the error, it does not remove it.
+
+What I would build, in order (each a stage with its own report):
+1. Quality monitor (`quality.h/.cpp`, about 200 lines). Per update frame it reads signals that exist
+   today: tracked features and occupied grid cells (tracker), features used, chi2 rejection share and
+   joint-gate rejections (MSCKF stats), velocity sigma and, for the log only, horizontal and vertical
+   position sigma (filter), IMU rate and gaps, td change, speed. State machine and score as above. An
+   output function turns state and filter into what would be sent (valid flags, NaN rules, covariance
+   unchanged). vio_replay writes state, score, the failing checks and the output flags as new
+   columns; the existing columns stay identical. `output.degraded_inflation_per_s` is removed. If you
+   choose E1, its flag is added here, doing what you choose under E2.
+2. Fault injection, in vio_replay (`--inject`), so it works on every session (synthetic, renders,
+   EuRoC, Gazebo): camera blackout (no features from t for d seconds), frozen image (the same frame
+   repeated), outlier features (a share of the pixels moved by k px), IMU gap, a td step. No new
+   sessions on disk.
+3. The FC IMU path, two items with separate reports:
+   a. Accel delay compensation. Missing code that real data needs: config/vio.yaml (`gyro_delay_ms`
+      7, `accel_delay_ms` 13) and ARDUPILOT_SETUP.md section 2 say the accel samples are shifted by
+      `accel_delay_ms - gyro_delay_ms` before integration, but no code reads these keys (checked
+      with grep over src/, include/ and tools/). Without it the accel of our real FC stream is used
+      about 6 ms late against the gyro. Built in the IMU input, with a unit test on a scripted
+      sequence and the check in b; off when the session says its IMU is raw (synthetic, EuRoC).
+   b. "FC IMU" degradation in the generator (`--fc-imu`), where the truth is exact: gyro and accel
+      delays (7 ms and 13 ms), first-order low-pass (80 Hz and 20 Hz as INS_GYRO_FILTER /
+      INS_ACCEL_FILTER), send-time jitter and occasional gaps.
+4. Recovery D (behind a switch, off by default): when features are present but every track fails its
+   gate, or the joint gate rejects, for N update frames in a row.
+
+Recovery and gap rules:
+| Rule | Status | What | Cost | Risk |
+|---|---|---|---|---|
+| D3. No filter change | tested, the baseline | only LOST until tracks pass again | none | on EuRoC the state does not come back by itself (22.35 and 25.45, the two starts still above 1 m with the joint gate) |
+| D2. Restart velocity and biases | tested | keep position and attitude, reset velocity, accel bias and td to their priors (static start values) with large sigma | small | loses scale and bias knowledge; a wrong restart in flight is no better than D1 |
+| D1. Inflate | only if D2 fails, and I ask you first | add a fixed variance to velocity, accel bias (and td) when the trigger fires | a few lines | it is noise inflation; can let a real fault through |
+| G1. Short gap | yes, with a test | after LOST under 5 s: continue the propagated filter, nothing reset | none | to be shown, not assumed: if the covariance is not honest through the gap, I report it and change nothing |
+| G2. Long gap | not now | position stays, its sigma grows by v_max x gap, velocity re-estimated | small to medium | the v_max bound (15 m/s) is a guess; it is a restart rule |
+
+Tests on synthetic data (few, key; the rest are evaluation runs as before, 20 seeds or starts with
+noise bands):
+- Unit tests: the state machine on a scripted sequence of frame signals (transitions, hysteresis, the
+  2 s rule, the two velocity sigma limits, no effect of the position sigma); the output rules (NaN
+  velocity above 0.9 m/s, never a NaN covariance with a valid position, a large position covariance
+  passed unchanged).
+- Blind spot: the km sets straight at constant speed, loop at constant speed, straight with speed
+  changes, straight with S-turns and loop with S-turns (20 seeds each), and the drifting-track sets
+  (noise study: straight and loop at constant speed, normal and low-contrast drift, 20 seeds; review:
+  straight with speed changes and with S-turns, normal drift, 8 seeds; filter told 1 px). Per row the state and score
+  against the true velocity error; reported per set as the share of time in GOOD while the true
+  velocity error is above 1 m/s, and above 3 sigma, and the true velocity error at the end per state.
+  Expected today: GOOD nearly all the time on the constant-speed straight and loop, despite about
+  6 m/s of error. With E1, if chosen, the same table with the flag.
+- Position covariance: per set, the distance at which posErr (4.6.3 formula) reaches the 10 m cap.
+- Blackout 1, 3 and 10 s on figure8, the straight leg and the normal render: the state goes DEGRADED
+  then LOST after 2 s, back to GOOD within 1-3 s after the features return (section 7 target).
+- G1: through the gap and the first 5 s after it, per second, the share of per-axis position and
+  velocity errors inside 3 sigma and the NEES (median over seeds), against the same seconds without
+  the gap.
+- Outliers and frozen images: rejected share up, DEGRADED; no divergence.
+- Recovery D3 and D2: EuRoC 121 starts (the two runs still above 1 m), the synthetic liftoff sets; D
+  off must give identical output.
+- Accel compensation: synthetic sessions with `--fc-imu`, compensation on and off: ATE, NEES, td
+  estimate; on a session without delays, the switch off gives identical output.
+- Switch off and no injection: every existing column identical, file for file.
+
+What only SITL or real data can show:
+- What EKF3 4.6.3 does once our posErr is above its 10 m cap (we send more, it uses 10 m and keeps
+  fusing): its own position variance, innovation gates, the EKF failsafe, and Loiter on a long
+  flight. Also sigma_z in posErr. SITL closed loop (Stage 2b), not this step.
+- The velocity sigma limits (0.9 and 2 m/s) and what the EKF does with DEGRADED and LOST (the 7 s
+  timeout, the failsafe): SITL Stage 2b.
+- How large the speed bias is on our drone and our flights, and whether normal flying turns enough
+  (E1 limits): our recordings with the GNSS logger.
+- Real image signals (blur, exposure, sky, water) and whether they predict bad frames: our
+  recordings; in this step they are logged, not used as checks.
+- The real FC IMU path (delays, jitter, vibration) and its gaps over USB: our recordings.
+- Recovery after a real takeoff and real vision loss: our recordings and flights.
+- CPU of the monitor on the Pi (expected negligible).
+
+What I would leave out of step 4: parts b and c of section 13; any MAVLink code (Stage 3); the FC
+divergence check (`fc_divergence_max_m`, needs the FC position, Stage 3); image-quality thresholds as
+checks (logged only); time-based covariance growth; landmark-specific quality; G2; the E options you
+do not choose; any tuning of limits to the synthetic results (placeholders stay placeholders until
+SITL).
+
+Decided after the plan (2026-11-26): velocity sigma limits 0.9 and 2 m/s as placeholders; K = 5;
+the score formula proposed in the piece 1 report (below).
+
+**Piece 1: quality monitor (implemented 2026-11-26).** `include/vio/quality.h`, `src/quality.cpp`
+(about 320 lines with comments), `tests/test_quality.cpp`; config `quality:` in config/vio.yaml (`enabled`, new keys
+`min_tracks_for_ratio`, `lost_velocity_sigma_m_s`, `good_frames_to_recover`, `excitation:`;
+`output.degraded_inflation_per_s` removed). Passive: vio_replay appends 14 columns (header comment
+in `src/tools/vio_replay.cpp`) and prints the state shares; nothing in the filter changes.
+- Velocity sigma: the square root of the largest eigenvalue of the velocity covariance (the worst
+  direction, vz included). Checks with too few inputs are not applied (forward-backward rate without
+  the tracker, inlier ratio with fewer than 10 tracks in the update).
+- Score: m_v = clamp(1 - sigma_v / 0.9), m_l = clamp(1 - sigma_v / 2), c = share of the applicable
+  checks that pass, f = `output.viso_qual_min` (10, must match the FC's `VISO_QUAL_MIN`); GOOD
+  50 + 50 m_v, DEGRADED f + (49 - f) c m_l, LOST -1. Not fitted. The floor is your decision of
+  2026-11-27: only LOST stops the FC from fusing. Corrected: the first report said DEGRADED never fell
+  below 10 without the floor; that was wrong, the takeoff sets (not in that report) went down to 2
+  (sharp) and 1 (gentle), with 5.7 % and 10.3 % of their DEGRADED rows below 10. With the floor:
+  GOOD 64-99 (median per set), DEGRADED 30-48, minimum 10 (the takeoffs). The biased straight leg
+  scores a little lower in GOOD (74) than the S-turn leg (86), from its larger velocity sigma, not
+  because the monitor sees the bias.
+- Checked: unit test (27 checks). Corrected: the first report said "every set" but left out the
+  sharp and gentle takeoffs, the synthetic approach and hover, the 24 km set, the six sets with the
+  baro off and EuRoC with 121 starts. Now all of them, with the score floor (analysis folder
+  `faults_2026-11-27/mon`, 641 replays): the columns before the monitor's are the same text as the
+  earlier runs with the midpoint off in 641 of 641 (timings excluded); the old binary against the new
+  one with the monitor off and on (synthetic, render, EuRoC): the same. The state machine replayed in
+  Python from the logged columns gives the logged state in 638 of 641 runs; the other 3 differ in
+  one row each, where the logged velocity sigma is rounded to 0.9000 at the 0.9 limit.
+
+| Set (runs) | GOOD / DEGRADED / LOST % | mostly failing | velocity error at end, m/s | rows with error > 1 m/s that are GOOD | E1 flag on | E1 raw value |
+|---|---|---|---|---|---|---|
+| straight, constant speed (20) | 78 / 16 / 5 | features 11 % | 6.6 | 78 % | 98 % | 0.41 |
+| straight, speed +-20 % (20) | 79 / 16 / 4 | features 10 % | 2.0 | 78 % | 98 % | 0.41 |
+| straight, S-turns (20) | 81 / 15 / 4 | features 9 % | 0.33 | (no rows) | 57 % | 0.93 |
+| loop, constant speed (20) | 82 / 15 / 3 | features 9 % | 5.8 | 83 % | 98 % | 0.41 |
+| drift: straight, constant speed (20) | 42 / 12 / 44 | speed 14 %, features 11 % | 16.2, all LOST at the end | 34 % | 98 % | 0.43 |
+| drift: straight, speed +-20 % (8) | 82 / 12 / 5 | features 10 % | 3.1 | 83 % | 98 % | 0.43 |
+| drift: straight, S-turns (8) | 85 / 11 / 4 | features 8 % | 0.73 | 85 % | 56 % | 0.93 |
+| drift low: straight, constant speed (20) | 25 / 21 / 50 | speed 24 %, joint gate 6 % | 18.6, all LOST | 20 % | 98 % | 0.46 |
+| figure8 (20) | 93 / 7 / 0 | joint gate 1 % | 0.17 | (no rows) | 18 % | 1.24 |
+| approach and hover, synthetic (20) | 97 / 3 / 0 | joint gate 0.3 % | 0.12 | (no rows) | 0 % | - |
+| takeoff, sharp (20) | 77 / 18 / 5 | inlier ratio 11 %, joint gate 4 % | 0.60 (0.15-8.3) | 31 % | 26 % | 0.80 |
+| takeoff, gentle (20) | 4 / 19 / 62 | features 59 %, cells 59 %, speed 13 % | 20 (0.45-133), all LOST at the end | 1 % | 22 % | 0.99 |
+| long flight 9 km (20) | 71 / 15 / 14 | features 19 % | 0.63 | 80 % (0.2 % of rows) | 99 % | 0.43 |
+| long flight 24 km (4) | 71 / 15 / 13 | features 18 % | 0.63 | 58 % (1.2 % of rows) | 99.5 % | 0.42 |
+| renders tilt / low / hover (20 each) | 95-97 / 3-5 / 0 | under 1 % | 0.15-0.28 | (no rows) | 0 % | 8.1 / 8.1 / - |
+| EuRoC MH_01_easy (20 starts) | 64 / 36 / 0 | inlier ratio 11 % | 0.03 | (no rows) | 0 % | - |
+| EuRoC MH_01_easy (121 starts) | 64 / 36 / 0 | inlier ratio 11 % | 0.03 | (no rows) | 0 % | - |
+
+(Medians over runs; loop sets like the straight ones; the sets with the baro off like those with it,
+except speed changes, which have less error without the baro (1.4 m/s at the end, 38 % of rows above
+1 m/s); full tables in the analysis folder.)
+- The blind spot is confirmed: where the speed is biased, the share of GOOD among the rows with more
+  than 1 m/s of velocity error is the same as the share of GOOD overall; the state does not depend on
+  the error. The only signal that reacts is the speed limit (25 m/s), and only once the drifting-track
+  runs estimate about twice the true 12 m/s. Speed changes with drifting tracks: 3.1 m/s at the end,
+  83 % GOOD. S-turns with drifting tracks: error above 1 m/s on 18 % of the rows, 85 % of them GOOD.
+- E1 at the placeholder limits (1 m/s^2 over 10 s) fires on every biased set, but also on 57 % of
+  the S-turn frames (raw value 0.93, just under the limit: these S-turns are gentle, 30 m every 40 s)
+  and on 99 % of the 9 km flight, whose error stays small. As a signal it is sensitive, not specific;
+  not tuned (your rule).
+- The features check (30 per frame) fails on 7-19 % of the synthetic frames: the generated ground is
+  sparse (about 37 features per frame, down to 21). Runs of such frames for 2 s make the 2-5 % LOST
+  on the synthetic sets and the 14 % on the 9 km flight. On the renders the tracker gives 150 and it
+  never fails. Placeholder kept.
+- EuRoC: DEGRADED 36 % from the inlier ratio (33-38 % chi2 rejections, the known EuRoC
+  overconfidence, DATASETS.md section 6); every start ends DEGRADED. The velocity error is 0.03 m/s
+  there, so for navigation this is a false alarm, not a detection: the check reacts to the filter
+  disagreeing with the images, which on EuRoC does not make the output worse.
+- Takeoffs: the gentle takeoff is mostly LOST (features and cells fail 59 %: near the ground the
+  generated view has few features) and its velocity error grows large (median 20 m/s at the end);
+  the monitor keeps it out of GOOD (1 % of the rows with more than 1 m/s of error are GOOD). The
+  sharp takeoff: 31 % of those rows are GOOD.
+- LOST is left only to GOOD (5 good frames in a row). On the 24 km set the longest LOST stretch is
+  28-34 s per run while the velocity error at the end is 0.6 m/s; why and the alternatives: piece 2,
+  "LOST exit".
+- posErr (4.6.3 formula) reaches 10 m after 500-670 m on the white-noise km sets, 316-404 m with
+  drifting tracks, 815 m on the 9 km flight; the horizontal sigma passes 3 m after 314-362 m (as in
+  your review), 203-252 m with drifting tracks. Beyond that the EKF uses 10 m whatever we send.
+- Not checked: CPU of the monitor on its own (the replays take the same 2 s as before); anything
+  with faults (piece 2); real or SITL data.
+
+**Piece 2: fault injection (implemented 2026-11-27).** `include/vio/inject.h`, `src/inject.cpp`,
+`tests/test_inject.cpp`; `vio_replay --inject <spec>` (repeatable): `blackout:T:D`, `frozen:T:D`,
+`outliers:T:D:SHARE:PX`, `imu_gap:T:D`, `td_step:T:MS`, T in s from the session's first IMU sample.
+Blackout: feature sessions get no features, image sessions a black image for the tracker. Frozen: the
+features or the image at T repeated. Outliers: each observation moved by PX in a random direction
+with probability SHARE (seeded). `imu_gap` removes the samples from the session before the replay, so
+the filter, the tracker's gyro prediction and the monitor (which reads `session.imu`) see the same
+gap. `td_step` shifts the camera time stamps from T on. With `--inject` one column `fault` (active
+fault bits) is added at the end; without it the output is unchanged.
+- Checked: unit test (13 checks: parsing and errors, timing, the IMU gap removed and seen by the
+  monitor's IMU window and its checks, td step order, outlier share and distance). Replays: 8 faults
+  on figure8 (fault at 40 s), the straight leg at constant speed (100 s) and the normal render
+  (11 s), 20 seeds or starts each, 480 replays (analysis folder `faults_2026-11-27/flt`). End to end,
+  the IMU check (rate or gap) failed in 20 of 20 runs of every IMU gap set.
+- Times are from the fault start (to DEGRADED, to LOST) or from its end, when the features are back
+  (out of LOST, to GOOD); medians (range) over the runs, counted only up to 3 s after the fault, so
+  the straight leg's own sparse stretches do not count (in a few runs it was already LOST).
+
+| Fault | Set | to DEGRADED, s | to LOST, s | out of LOST after, s | GOOD after, s | failing in the fault | ATE % (no fault) |
+|---|---|---|---|---|---|---|---|
+| blackout 1 s | figure8 / render | 0.0-0.1 | never | - | 0.8 | features, cells | 0.18 (0.15) / 0.20 (0.17) |
+| blackout 3 s | figure8 / straight / render | 0.0-0.1 | 1.8-1.9 | 0.8 (0.8-0.9; straight up to 6.2) | 0.8 | features, cells | 0.21 / 13.4 (13.1) / 0.22 |
+| blackout 10 s | figure8 / straight / render | 0.0-0.1 | 1.8-1.9 | 1.6 / 2.4 / 1.7 (1.6-3.0) | the same | features, cells | 0.30 / 15.1 / 0.72 |
+| frozen 3 s | figure8 / render | 0.8 / 0.2 | never | - | 0.0-0.6 | inlier ratio 17-19 % of the rows | 0.20 / 0.24 |
+| frozen 3 s | straight | not detected (DEGRADED only in 10 of 20 runs, from its sparse ground) | | | | | 13.7 |
+| outliers 30 %, 10 px, 3 s | figure8 | 0.4 | 2.2, in 4 of 20 runs | 2.6 | 2.4 | inlier ratio 68 % | 0.17 |
+| outliers 30 %, 10 px, 3 s | render | 0.4 | 2.9, in 19 of 20 | 2.5 | 2.5 | inlier ratio 78 % | 0.20 |
+| outliers 30 %, 10 px, 3 s | straight | not detected | | | | | 13.4 |
+| IMU gap 0.1 s | all three | 0.1-0.2 | never | - | 1.1 | IMU rate and gap, 20 of 20 runs | unchanged |
+| IMU gap 0.5 s | figure8 | 0.2 | 2.0, in 4 of 20 | - | 2.9 (1.1-5.3) | IMU 20 of 20, then inlier ratio 46 % | 0.23 (0.15), NEES pos 5.5 (3.0) |
+| IMU gap 0.5 s | straight / render | 0.1-0.2 | never | - | 1.1 | IMU 20 of 20 | 13.0 / 0.23 |
+| td step +20 ms | all three | not detected | | | | | unchanged (render NEES pos 4.1 against 3.0) |
+
+- Blackouts: DEGRADED at the first frame, LOST when the 2 s since the last good frame are over (1.8-2
+  s after the start), out of LOST 0.8 s after a 3 s blackout and 1.6-2.4 s after a 10 s one: the
+  1-3 s target of section 7 is met. 1 s blackouts never reach LOST.
+- G1 (the covariance through the gap, per second, median over the runs): through every blackout the
+  velocity errors stay inside 3 sigma (100 %) and the position NEES falls (figure8 3.0 to 1.8-2.2,
+  render 3 to 0.8-1.3, straight 5.5 to 4.3): cautious, not overconfident. After the return it is
+  back to the no-fault values within 1-2 s on figure8 and the straight leg. Not after the 10 s
+  blackout on the render: 1-3 s after the return the position NEES is 3.6, 5.4 and 7.1 (no fault:
+  1.6, 1.2, 1.1) and the velocity errors are inside 3 sigma only 80 % of the time for 2 s, while the
+  state is already GOOD (1.7 s). So G1 is honest through the gap, but not always just after it.
+- Frozen image and outliers are seen only through the inlier ratio. On the synthetic straight leg
+  there are only 3-6 MSCKF tracks per update, below `min_tracks_for_ratio` (10, a piece 1
+  placeholder), so the check is not applied and neither fault is detected; every track in those updates is rejected (0 used, 2-6
+  rejected), so the filter dead-reckons and does not diverge (ATE as without the fault). On figure8
+  and the render (more tracks) they are seen. A frozen image never reaches LOST in 3 s.
+- IMU gap: reaches the monitor in every run. A 0.5 s gap leaves the filter overconfident for several
+  seconds: velocity errors inside 3 sigma 80-87 % for 4 s on figure8 (73-93 % for 5 s on the straight
+  leg, 80 % for 1 s on the render), position NEES up to 6.5. The state is DEGRADED only while the
+  gap is in the IMU window (one or two frames), then GOOD again after 1.1 s. 0.1 s gaps change nothing.
+- td step: the filter treats td as a constant (prior sigma, no process noise; its sigma is about
+  1.5 ms after the start), so the estimate does not follow a later step (figure8 0.4 ms before, 0.1
+  ms at the end; straight 2.4 / 3.0), and the monitor's td-change check cannot fire. The effect on
+  these sessions is small (ATE unchanged, render NEES 4.1 against 3.0).
+
+LOST exit (your item 3). Replayed offline from the logged checks with other exit rules (`lost_table.py`):
+
+| Rule | What | Cost | 24 km: LOST %, longest, s | 9 km: LOST %, longest | Out of LOST after a 3 / 10 s blackout, s | Risk |
+|---|---|---|---|---|---|---|
+| L0 (as built) | LOST left only to GOOD, 5 good frames in a row | none | 13.3 %, 30 (28-34) | 13.9 %, 19 | 0.8 / 1.6-2.4 | long LOST on marginal texture; the FC's EKF gives up after about 8 s without data (ARDUPILOT_SETUP.md section 9) |
+| L1 | LOST to DEGRADED on the first good frame, GOOD after 5 in a row | 2 lines | 10.0 %, 22.5 (17-34) | 10.8 %, 15 | 0.2 / 0.8-1.4 | one good frame among bad ones restarts fusing (DEGRADED is fused); LOST and DEGRADED can alternate frame by frame |
+| L2 | LOST left after 5 good frames among the last 7 | about 10 lines | 12.8 %, 30 | 13.4 %, 18.5 | 0.8 / 1.6-2.4 | hardly changes anything here; lets intermittent bad frames through |
+| L3 | the 2 s rule counts a frame with at least 10 features whose only failures are the feature count or the grid cells as usable (DEGRADED, not LOST) | about 5 lines, one more placeholder (10) | 0 %, 0 | 0 %, 0 | 0.8 / 1.6-2.4 (a blackout has 0 features) | a camera that slowly loses texture stays DEGRADED, and is fused, until it has fewer than 10 features |
+
+- Why LOST lasts so long on the 24 km set: the longest stretch of each run (28-34 s, between 1440 and
+  1650 s) has 2-17 % good frames and never more than 4 in a row; the failing check is the feature
+  count in 83-98 % of its frames (median 24 features, minimum 13): the generated ground is sparse on
+  that part of the circle. The filter is fine there (velocity sigma at most 0.4 m/s, error at the end
+  0.6 m/s). It entered by the 2 s rule. With any rule the frames with 24 features stay DEGRADED, not
+  GOOD (the 30 stays, your decision).
+- L3 removes all LOST from the synthetic white-noise sets and the long flights and changes nothing
+  for the blackouts and the gentle takeoff (62 % LOST, real failures). Not decided: your choice.
+
+Proposals for the other findings (none decided):
+| Finding | Option | Cost | Risk |
+|---|---|---|---|
+| frozen image and outliers not seen with few tracks | (a) keep: images give more tracks per update (median 14-15 on the renders, 10 on figure8, 7 on EuRoC, 3 on the straight leg; the check applies to 83-91 %, 58 %, 33 % and 0.3 % of the updates) | none | blind on sparse ground and on a third of EuRoC |
+| | (b) inlier ratio over the last 1 s of updates instead of per update | about 10 lines | slower to react (1 s) |
+| | (c) "every track rejected for N updates in a row" as a check (the trigger of piece 4) | about 10 lines | N is one more placeholder |
+| overconfident after a 0.5 s IMU gap | (a) DEGRADED for a fixed time after an IMU gap above the limit | a few lines | the time is a guess; it hides nothing from the FC (DEGRADED is fused) |
+| | (b) LOST for that time | a few lines | the FC loses us for every gap |
+| | (c) nothing until the FC IMU stream shows how often gaps happen (piece 3 adds gaps to the generator) | none | |
+| td step not followed | (a) nothing now: td fixed after the start, a step needs a restart (D2 of piece 4 resets td) | none | a real step would go unseen |
+| | (b) a td random walk in the filter | a filter change: your decision | td becomes noisier everywhere |
+
+- Not checked: faults on EuRoC or the low-contrast render; more than one fault at a time; real or
+  SITL data.
+
 Open after the review fixes, the moving origin, part a, the EuRoC liftoff check and stage 4:
 
 1. The filter is overconfident on the low-contrast render (position NEES 10, range 2.0-28 over 20
@@ -1356,7 +1693,7 @@ feature is trusted come only from the constants below.
 | IMU noise densities and random walks | `imu:` or the session's `sensor.yaml` | process noise, white, the same in hover and in a 45 deg bank | On EuRoC 33-38 % of the tracks fail the 95 % chi2 gate (5 % expected), although their white pixel error is 0.88 px RMS: the pose part of the innovation covariance is too small. EuRoC velocity and attitude NEES rise with speed, rotation rate and acceleration (+0.24 to +0.31). Not on the renders, where the IMU model is exact. |
 | ZUPT velocity noise | 0.01 m/s | only when still | No evidence either way: still only at the EuRoC start. On the drone it needs the landed check with motors running (Stage 1b). |
 | `filter.chi2_probability` | 0.95 | the gate | Fine as a probability; it is only as good as the covariance it tests against. |
-| `output.degraded_inflation_per_s` | 0.5 | planned growth in DEGRADED | Not used yet, no basis in data; replaced by 13.4 and 13.6. |
+| `output.degraded_inflation_per_s` | 0.5 | planned growth in DEGRADED | Never used; removed from config/vio.yaml on 2026-11-26 (your decision, step 4 plan). |
 
 ### 13.2 Signals available at run time
 
@@ -1642,6 +1979,10 @@ of that NEES it removes can only be measured once NIS is written out (implementa
 - z: our sigma_z enters posErr although the EKF takes height from the baro. A covariance that grows
   mostly in z (weak scale, low parallax) also lowers the weight of our horizontal position.
   Conservative, kept for now, checked in SITL (open question 3).
+- Changed 2026-11-26 (your decision after the review): position sigma drives neither DEGRADED nor
+  LOST; it passes 3 m after 312-436 m on the km flights. The 1.5 m and 3 m thresholds below are
+  withdrawn; the states come from the frame signals and the velocity sigma, and C_filter is sent
+  unchanged however large (step 4 plan in section 11). Kept below as first proposed.
 - Quality states (section 7):
   - GOOD: C_out = lambda * C_filter, lambda at most 2, horizontal sigma at most 1.5 m, quality 50-100
     from the horizontal sigma and lambda.
@@ -1741,7 +2082,8 @@ the noise band (13.8); 3 stays (online td, your decision).
    minutes in CALIBRATION.md step 2)?
 
 Answered: 1 in part (a approved behind a switch, 2026-11-26; b and c not decided), 4 (problems 1
-and 2 were fixed first). New after part a (13.11):
+and 2 were fixed first), 2 (no: position sigma drives neither DEGRADED nor LOST, 2026-11-26, see the
+step 4 plan in section 11). New after part a (13.11):
 
 6. One q does not fit hover and flight (renders: 0.011 against 0.05-0.06 px^2/deg). Options: a q per
    flight phase (speed), the frame multiplier of 13.4 a, landmarks with a smaller q than MSCKF

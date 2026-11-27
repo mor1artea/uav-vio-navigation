@@ -149,30 +149,42 @@ filter:
     noise_deg: 8.0
 
 quality:
-  # Score 0-100 and state GOOD / DEGRADED / LOST
-  good_min_score: 50
+  # Quality monitor (src/quality.cpp, DESIGN.md section 11 "Step 4 plan"). Passive: in vio_replay it
+  # adds columns at the end of each row and changes nothing else. All limits are placeholders until
+  # SITL or real data. The position sigma does not change the state.
+  enabled: true
   lost_after_bad_s: 2.0          # no good frames for this long -> LOST
-  min_tracks: 30
-  min_tracked_ratio: 0.5         # forward-backward check pass rate
-  min_grid_cells: 12             # cells with at least one feature
-  min_inlier_ratio: 0.6
+  min_tracks: 30                 # features in the frame
+  min_tracked_ratio: 0.5         # forward-backward check pass rate (only when the tracker runs)
+  min_grid_cells: 12             # cells with at least one feature (tracker.grid)
+  min_inlier_ratio: 0.6          # MSCKF tracks used / (used + chi2 rejected)
+  min_tracks_for_ratio: 10       # fewer tracks in the update: the ratio above is not checked
+  imu_rate_min_hz: 150           # since the last update frame
+  imu_gap_max_ms: 20
+  td_change_max_ms: 10           # td change since the last update frame
+  max_speed_m_s: 25.0            # anything faster is treated as a filter error
+  lost_velocity_sigma_m_s: 2.0   # LOST above this; DEGRADED above output.velocity_nan_sigma_factor x viso_vel_m_nse
+  good_frames_to_recover: 5      # good update frames in a row before GOOD again
+  excitation:                    # E1, low excitation: logged only, changes nothing
+    window_s: 10.0
+    min_lateral_accel_range: 1.0 # m/s^2: flag when the sideways acceleration varied less than this
+    min_speed_m_s: 3.0
+  # Not used by the monitor (yet): image signals are logged only; reprojection, frame jitter and
+  # the FC check need data we do not have offline (fc_divergence_max_m: Stage 3).
+  good_min_score: 50
   max_reprojection_px: 2.0
   blur_laplacian_var_min: 30.0
   brightness_range: [20, 235]
-  imu_rate_min_hz: 150
-  imu_gap_max_ms: 20
-  td_change_max_ms: 10
   frame_interval_jitter_max_ms: 8
-  max_speed_m_s: 25.0            # anything faster is treated as a filter error
   fc_divergence_max_m: 5.0       # our position vs FC LOCAL_POSITION_NED
 
 output:
   rate_hz: 30
   velocity_nan_sigma_factor: 3.0 # send NaN velocity when sigma_v > factor * VISO_VEL_M_NSE
   viso_vel_m_nse: 0.3            # must match the FC parameter
-  degraded_inflation_per_s: 0.5  # covariance grows as exp(rate * time in DEGRADED)
+  viso_qual_min: 10              # must match VISO_QUAL_MIN (planned 10): lowest DEGRADED score, so only LOST is not fused
   short_gap_s: 5.0               # recovery: below this, propagate through the gap
-  max_speed_for_gap_bound_m_s: 15.0
+  max_speed_for_gap_bound_m_s: 15.0  # long-gap rule (G2), not built for now
   covariance_mode: honest        # see ARDUPILOT_SETUP.md section 3
 
 recording:

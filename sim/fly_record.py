@@ -247,6 +247,8 @@ class WindSource:
 
 
 def main():
+    sys.stdout.reconfigure(line_buffering=True)  # each line at once, also through a pipe to tee
+    sys.stderr.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description="Fly SITL + Gazebo and record a session (SITL only).")
     ap.add_argument("out", help="new session folder")
     ap.add_argument("--world", default="~/sim/world_line", help="world folder (for camera.yaml)")
